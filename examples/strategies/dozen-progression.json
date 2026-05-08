@@ -1,0 +1,13 @@
+{
+  "id": "example-dozen",
+  "name": "Dozen progression",
+  "tableName": "European",
+  "baseUnit": 1,
+  "progression": { "type": "sequence", "multipliers": [1, 2, 3] },
+  "resetOnWin": false,
+  "allowedBetTypes": ["dozen", "column"],
+  "primaryTarget": { "kind": "dozen", "dozen": 2 },
+  "customTables": [],
+  "trigger": { "kind": "always" },
+  "stopRules": {}
+}

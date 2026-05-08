@@ -1,0 +1,13 @@
+{
+  "id": "example-flat-red",
+  "name": "Flat red",
+  "tableName": "European",
+  "baseUnit": 1,
+  "progression": { "type": "flat", "multiplier": 1 },
+  "resetOnWin": true,
+  "allowedBetTypes": ["red"],
+  "primaryTarget": { "kind": "red" },
+  "customTables": [],
+  "trigger": { "kind": "always" },
+  "stopRules": {}
+}

@@ -1,0 +1,76 @@
+{
+  "name": "roulette-strategy-agent",
+  "version": "0.1.0",
+  "description": "Roulette Strategy Agent — simulation, observation, policy-gated assistance",
+  "main": "out/main/index.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev",
+    "build": "electron-vite build && electron-builder",
+    "preview": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
+    "start": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "db:generate": "drizzle-kit generate",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "drizzle-orm": "^0.45.2",
+    "playwright": "^1.52.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "recharts": "^2.15.2",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.25.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.14.1",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.21",
+    "drizzle-kit": "^0.31.10",
+    "electron": "^39.8.5",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^3.1.0",
+    "eslint": "^9.25.1",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.31.0",
+    "vite": "^6.3.3",
+    "vitest": "^3.1.2"
+  },
+  "build": {
+    "appId": "com.roulettestrategy.agent",
+    "productName": "Roulette Strategy Agent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  }
+}

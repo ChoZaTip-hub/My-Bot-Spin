@@ -1,0 +1,890 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts'
+import type { AppSettings } from '@modules/shared/ipc-contract'
+import type { AppMode } from '@modules/shared/modes'
+import { StrategyConfigSchema } from '@modules/shared/strategy-config'
+import type { AppLocale } from './i18n/types'
+import type { MessageKey } from './i18n/messages'
+import { translate } from './i18n/messages'
+import { I18nProvider, useI18n } from './i18n/context'
+import CasinoDashboard from './casino/CasinoDashboard'
+import { getApi } from './bridge'
+
+type Page = 'dashboard' | 'strategies' | 'simulator' | 'live' | 'logs' | 'settings'
+
+function guessLocale(): AppLocale {
+  return typeof navigator !== 'undefined' && /^ru/i.test(navigator.language) ? 'ru' : 'en'
+}
+
+function useThemeClass(settings: AppSettings | null) {
+  useEffect(() => {
+    if (!settings) return
+    const root = document.documentElement
+    const dark =
+      settings.theme === 'dark' ||
+      (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    root.classList.toggle('dark', dark)
+  }, [settings])
+}
+
+function drawdownSeries(curve: number[]): { step: number; drawdown: number }[] {
+  let peak = curve[0] ?? 0
+  return curve.map((b, i) => {
+    peak = Math.max(peak, b)
+    return { step: i, drawdown: peak - b }
+  })
+}
+
+const METRIC_LABELS: Partial<Record<string, MessageKey>> = {
+  totalSessions: 'metric_totalSessions',
+  winRate: 'metric_winRate',
+  evEstimate: 'metric_evEstimate',
+  maxDrawdownAcrossSessions: 'metric_maxDrawdownAcrossSessions',
+  longestLossStreak: 'metric_longestLossStreak',
+  longestWinStreak: 'metric_longestWinStreak',
+  mode: 'metric_mode'
+}
+
+export default function App(): React.ReactElement {
+  const api = getApi()
+  const [page, setPage] = useState<Page>('dashboard')
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [strategies, setStrategies] = useState<{ id: string; name: string; updatedAt: number }[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  const refreshStrategies = useCallback(async () => {
+    const list = await api.strategies.list()
+    setStrategies(list)
+  }, [api])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const s = await api.settings.get()
+        setSettings(s)
+        await refreshStrategies()
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [api, refreshStrategies])
+
+  useThemeClass(settings)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key === 'Enter') {
+        e.preventDefault()
+        void api.session.resume().catch(() => undefined)
+      }
+      if (mod && e.key === '.') {
+        e.preventDefault()
+        void api.session.stop().catch(() => undefined)
+      }
+      if (e.code === 'Space' && e.target === document.body) {
+        e.preventDefault()
+        void api.session.pause().catch(() => undefined)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [api])
+
+  const onLocaleChange = useCallback(
+    async (locale: AppLocale) => {
+      const next = await api.settings.set({ locale })
+      setSettings(next)
+    },
+    [api]
+  )
+
+  if (!settings) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-surface">
+        <p className="text-sm text-slate-500">{translate(guessLocale(), 'loading')}</p>
+      </div>
+    )
+  }
+
+  return (
+    <I18nProvider locale={settings.locale} onLocaleChange={onLocaleChange}>
+      <AppChrome
+        page={page}
+        setPage={setPage}
+        settings={settings}
+        setSettings={setSettings}
+        strategies={strategies}
+        error={error}
+        api={api}
+        refreshStrategies={refreshStrategies}
+      />
+    </I18nProvider>
+  )
+}
+
+function AppChrome(props: {
+  page: Page
+  setPage: (p: Page) => void
+  settings: AppSettings
+  setSettings: (s: AppSettings) => void
+  strategies: { id: string; name: string; updatedAt: number }[]
+  error: string | null
+  api: ReturnType<typeof getApi>
+  refreshStrategies: () => Promise<void>
+}): React.ReactElement {
+  const { t, locale, setLocale } = useI18n()
+  const { page, setPage, settings, setSettings, strategies, error, api, refreshStrategies } = props
+
+  const acceptDisclaimer = async () => {
+    const next = await api.settings.set({ disclaimerAccepted: true })
+    setSettings(next)
+  }
+
+  const navItems: [Page, MessageKey][] = [
+    ['dashboard', 'navDashboard'],
+    ['strategies', 'navStrategies'],
+    ['simulator', 'navSimulator'],
+    ['live', 'navLive'],
+    ['logs', 'navLogs'],
+    ['settings', 'navSettings']
+  ]
+
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const tick = (): void => {
+      void props.api.session.status().then((s) => setLiveSessionId(s.sessionId))
+    }
+    tick()
+    const id = setInterval(tick, 2000)
+    return () => clearInterval(id)
+  }, [props.api])
+
+  return (
+    <div className="casino-ui flex h-screen flex-col bg-surface text-slate-900 dark:text-slate-100">
+      {!settings.disclaimerAccepted && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="disc-title"
+        >
+          <div className="max-w-lg rounded-lg border border-border bg-elevated p-6 shadow-xl">
+            <h2 id="disc-title" className="text-lg font-semibold">
+              {t('riskNotice')}
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-400">{t('riskBody')}</p>
+            <button
+              type="button"
+              className="mt-6 w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-accent"
+              onClick={() => void acceptDisclaimer()}
+            >
+              {t('understand')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <header className="flex items-center justify-between border-b border-border/80 bg-elevated/95 px-4 py-3 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <span className="bg-gradient-to-r from-gold to-amber-200 bg-clip-text font-display text-base font-bold tracking-tight text-transparent">
+            {t('appTitle')}
+          </span>
+          <span className="rounded border border-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-400">
+            {t('badgeLocal')}
+          </span>
+          {liveSessionId && (
+            <span className="rounded-full bg-blue-600 px-2 py-0.5 font-display text-[10px] font-bold uppercase tracking-widest text-white shadow-lg shadow-blue-900/50">
+              {t('liveBadge')}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <div className="flex items-center gap-1 rounded-md border border-border bg-surface px-1 py-0.5">
+            <span className="px-1 text-xs text-slate-500">{t('langSwitch')}:</span>
+            <button
+              type="button"
+              className={`rounded px-2 py-1 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-accent ${
+                locale === 'en' ? 'bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-100 dark:hover:bg-slate-900'
+              }`}
+              onClick={() => void setLocale('en')}
+              aria-pressed={locale === 'en'}
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              className={`rounded px-2 py-1 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-accent ${
+                locale === 'ru' ? 'bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-100 dark:hover:bg-slate-900'
+              }`}
+              onClick={() => void setLocale('ru')}
+              aria-pressed={locale === 'ru'}
+            >
+              RU
+            </button>
+          </div>
+          <div className="text-xs text-slate-500">
+            {settings.dryRunOnly ? t('headerDryRunOnly') : t('headerExecMay')} · {t('headerTheme')}: {settings.theme}
+          </div>
+        </div>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <nav
+          className="w-56 shrink-0 border-r border-border/80 bg-elevated/90 p-3 backdrop-blur-sm"
+          aria-label={t('navMain')}
+        >
+          {navItems.map(([id, key]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setPage(id)}
+              className={`mb-1 flex w-full rounded-lg px-3 py-2.5 text-left text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-gold/50 ${
+                page === id
+                  ? 'bg-gold/10 text-gold ring-1 ring-gold/30'
+                  : 'text-slate-700 hover:bg-slate-200/80 dark:text-slate-300 dark:hover:bg-slate-800/80'
+              }`}
+            >
+              {t(key)}
+            </button>
+          ))}
+        </nav>
+
+        <main className="min-w-0 flex-1 overflow-auto p-5">
+          {error && (
+            <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-danger dark:border-red-900 dark:bg-red-950">
+              {error}
+            </div>
+          )}
+          {page === 'dashboard' && <CasinoDashboard strategies={strategies} />}
+          {page === 'strategies' && (
+            <StrategiesPage
+              api={api}
+              strategies={strategies}
+              onRefresh={() => void refreshStrategies()}
+            />
+          )}
+          {page === 'simulator' && (
+            <SimulatorPage api={api} strategies={strategies} metricLabels={METRIC_LABELS} />
+          )}
+          {page === 'live' && <LivePage api={api} strategies={strategies} settings={settings} />}
+          {page === 'logs' && <LogsPage api={api} />}
+          {page === 'settings' && (
+            <SettingsPage
+              settings={settings}
+              onChange={async (partial) => {
+                const next = await api.settings.set(partial)
+                setSettings(next)
+              }}
+            />
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+function StrategiesPage(props: {
+  api: ReturnType<typeof getApi>
+  strategies: { id: string; name: string }[]
+  onRefresh: () => void
+}): React.ReactElement {
+  const { t } = useI18n()
+  const [json, setJson] = useState('')
+  const [validation, setValidation] = useState<string | null>(null)
+
+  return (
+    <div>
+      <h1 className="text-xl font-semibold">{t('stratTitle')}</h1>
+      <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{t('stratIntro')}</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {props.strategies.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className="rounded border border-border px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-900"
+            onClick={async () => {
+              const cfg = await props.api.strategies.get(s.id)
+              setJson(JSON.stringify(cfg, null, 2))
+            }}
+          >
+            {s.name}
+          </button>
+        ))}
+      </div>
+      <textarea
+        className="mt-4 h-80 w-full rounded border border-border bg-elevated p-3 font-mono text-xs"
+        spellCheck={false}
+        value={json}
+        onChange={(e) => setJson(e.target.value)}
+        placeholder={t('stratPlaceholder')}
+      />
+      {validation && (
+        <pre className="mt-2 max-h-40 overflow-auto rounded bg-red-50 p-2 text-xs text-danger dark:bg-red-950">
+          {validation}
+        </pre>
+      )}
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          className="rounded bg-slate-200 px-3 py-2 text-sm dark:bg-slate-800"
+          onClick={async () => {
+            try {
+              const parsed = JSON.parse(json) as unknown
+              const r = await props.api.strategies.validate(parsed)
+              if (r.ok) {
+                setValidation(null)
+              } else {
+                setValidation(JSON.stringify(r.errors, null, 2))
+              }
+            } catch (e) {
+              setValidation(e instanceof Error ? e.message : String(e))
+            }
+          }}
+        >
+          {t('validate')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-accent px-3 py-2 text-sm text-white"
+          onClick={async () => {
+            const parsed = JSON.parse(json) as unknown
+            await props.api.strategies.save(parsed)
+            props.onRefresh()
+          }}
+        >
+          {t('save')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SimulatorPage(props: {
+  api: ReturnType<typeof getApi>
+  strategies: { id: string; name: string }[]
+  metricLabels: Partial<Record<string, MessageKey>>
+}): React.ReactElement {
+  const { t } = useI18n()
+  const [strategyId, setStrategyId] = useState<string>('')
+  const [seed, setSeed] = useState('42')
+  const [spins, setSpins] = useState('500')
+  const [bankroll, setBankroll] = useState('1000')
+  const [batch, setBatch] = useState('20')
+  const [curve, setCurve] = useState<number[]>([])
+  const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null)
+  const [histSpins, setHistSpins] = useState<number[]>([])
+
+  const chartData = useMemo(() => {
+    const dd = drawdownSeries(curve)
+    return curve.map((b, i) => ({
+      step: i,
+      bankroll: b,
+      drawdown: dd[i]?.drawdown ?? 0
+    }))
+  }, [curve])
+
+  const metricTitle = (key: string): string => {
+    const mk = props.metricLabels[key]
+    return mk ? t(mk) : key
+  }
+
+  return (
+    <div>
+      <h1 className="text-xl font-semibold">{t('simTitle')}</h1>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div className="rounded border border-border bg-elevated p-4">
+          <label className="text-xs font-medium text-slate-500">{t('simStrategy')}</label>
+          <select
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={strategyId}
+            onChange={(e) => void setStrategyId(e.target.value)}
+          >
+            <option value="">{t('simSelect')}</option>
+            {props.strategies.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simSeed')}</label>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={seed}
+            onChange={(e) => setSeed(e.target.value)}
+          />
+          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simSpins')}</label>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={spins}
+            onChange={(e) => setSpins(e.target.value)}
+          />
+          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simBankroll')}</label>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={bankroll}
+            onChange={(e) => setBankroll(e.target.value)}
+          />
+          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simBatch')}</label>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={batch}
+            onChange={(e) => setBatch(e.target.value)}
+          />
+          <button
+            type="button"
+            className="mt-4 w-full rounded bg-accent py-2 text-sm font-medium text-white"
+            onClick={async () => {
+              const cfgUnknown = await props.api.strategies.get(strategyId)
+              const cfg = StrategyConfigSchema.parse(cfgUnknown)
+              const res = (await props.api.simulation.run({
+                strategyConfig: cfg,
+                seed: Number.parseInt(seed, 10),
+                spinCount: Number.parseInt(spins, 10),
+                initialBankroll: Number.parseFloat(bankroll),
+                batchSessions: Number.parseInt(batch, 10)
+              })) as { lastCurve: number[]; metrics: Record<string, unknown> }
+              setCurve(res.lastCurve)
+              setMetrics(res.metrics)
+              try {
+                sessionStorage.setItem('rsa_last_curve', JSON.stringify(res.lastCurve))
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            {t('simRunMc')}
+          </button>
+        </div>
+        <div className="rounded border border-border bg-elevated p-4">
+          <h2 className="text-sm font-semibold">{t('simHistTitle')}</h2>
+          <button
+            type="button"
+            className="mt-2 rounded border border-border px-3 py-2 text-sm"
+            onClick={async () => {
+              const path = await props.api.dialog.pickCsv()
+              if (!path) return
+              const { spins: s } = await props.api.import.spinsCsv(path)
+              setHistSpins(s)
+            }}
+          >
+            {t('simPickCsv')}
+          </button>
+          <p className="mt-2 text-xs text-slate-500">
+            {histSpins.length} {t('simSpinsLoaded')}
+          </p>
+          <button
+            type="button"
+            className="mt-4 w-full rounded bg-slate-800 py-2 text-sm font-medium text-white dark:bg-slate-200 dark:text-slate-900"
+            onClick={async () => {
+              const cfgUnknown = await props.api.strategies.get(strategyId)
+              const cfg = StrategyConfigSchema.parse(cfgUnknown)
+              const res = (await props.api.simulation.runHistorical({
+                strategyConfig: cfg,
+                initialBankroll: Number.parseFloat(bankroll),
+                spins: histSpins
+              })) as { bankrollCurve: number[] }
+              setCurve(res.bankrollCurve)
+              setMetrics({ mode: 'historical' })
+              try {
+                sessionStorage.setItem('rsa_last_curve', JSON.stringify(res.bankrollCurve))
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            {t('simReplay')}
+          </button>
+        </div>
+      </div>
+
+      {metrics && (
+        <div className="mt-6 grid gap-3 md:grid-cols-3">
+          {Object.entries(metrics)
+            .filter(([k]) => k !== 'endingBankrollDistribution')
+            .map(([k, v]) => (
+              <div key={k} className="rounded border border-border bg-elevated p-3 text-sm">
+                <div className="text-xs uppercase text-slate-500">{metricTitle(k)}</div>
+                <div className="mt-1 font-mono text-lg">{typeof v === 'number' ? v.toFixed(4) : String(v)}</div>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {chartData.length > 0 && (
+        <div className="mt-8 h-72 rounded border border-border bg-elevated p-2">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} />
+              <XAxis dataKey="step" />
+              <YAxis yAxisId="left" />
+              <YAxis yAxisId="right" orientation="right" />
+              <Tooltip />
+              <Legend />
+              <Line
+                yAxisId="left"
+                type="monotone"
+                dataKey="bankroll"
+                name={t('chartBankroll')}
+                stroke="var(--profit)"
+                dot={false}
+              />
+              <Line
+                yAxisId="right"
+                type="monotone"
+                dataKey="drawdown"
+                name={t('chartDrawdown')}
+                stroke="var(--danger)"
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LivePage(props: {
+  api: ReturnType<typeof getApi>
+  strategies: { id: string; name: string }[]
+  settings: AppSettings
+}): React.ReactElement {
+  const { t } = useI18n()
+  const [mode, setMode] = useState<AppMode>('dry-run')
+  const [strategyId, setStrategyId] = useState('')
+  const [url, setUrl] = useState('')
+  const [bankroll, setBankroll] = useState('1000')
+  const [timeline, setTimeline] = useState<unknown[]>([])
+  const [pending, setPending] = useState<unknown>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const off = props.api.onTimeline((ev) => {
+      setTimeline((prev) => [...prev, ev])
+    })
+    return off
+  }, [props.api])
+
+  const refreshStatus = async () => {
+    const s = await props.api.session.status()
+    setPending(s.pending)
+    setSessionId(s.sessionId)
+  }
+
+  return (
+    <div className="space-y-5">
+      <h1 className="font-display text-2xl font-bold text-gold">{t('liveTitle')}</h1>
+      <div className="grid gap-3 md:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setMode('suggestion')}
+          className={`rounded-xl border-2 p-4 text-left transition-all ${
+            mode === 'suggestion'
+              ? 'border-emerald-500/80 bg-emerald-950/40 ring-1 ring-emerald-500/40'
+              : 'border-border/60 bg-elevated/60 hover:border-emerald-500/30'
+          }`}
+        >
+          <div className="font-display text-lg font-semibold text-emerald-400">{t('presetMild')}</div>
+          <div className="mt-1 text-xs text-slate-400">{t('presetMildSub')}</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('dry-run')}
+          className={`rounded-xl border-2 p-4 text-left transition-all ${
+            mode === 'dry-run'
+              ? 'border-gold/80 bg-amber-950/30 ring-1 ring-gold/30'
+              : 'border-border/60 bg-elevated/60 hover:border-gold/30'
+          }`}
+        >
+          <div className="font-display text-lg font-semibold text-gold">{t('presetClassic')}</div>
+          <div className="mt-1 text-xs text-slate-400">{t('presetClassicSub')}</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('confirmed-action')}
+          className={`rounded-xl border-2 p-4 text-left transition-all ${
+            mode === 'confirmed-action'
+              ? 'border-red-500/80 bg-red-950/30 ring-1 ring-red-500/40'
+              : 'border-border/60 bg-elevated/60 hover:border-red-500/30'
+          }`}
+        >
+          <div className="font-display text-lg font-semibold text-red-400">{t('presetHedge')}</div>
+          <div className="mt-1 text-xs text-slate-400">{t('presetHedgeSub')}</div>
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border/60 bg-elevated/50 px-4 py-2 text-sm">
+        <span className="text-slate-400">{t('autoBet')}</span>
+        <span
+          className={
+            props.settings.executorEnabled && !props.settings.dryRunOnly ? 'font-mono text-profit' : 'text-slate-500'
+          }
+        >
+          {props.settings.executorEnabled && !props.settings.dryRunOnly ? t('autoBetOn') : t('autoBetOff')}
+        </span>
+        <span className="text-xs text-slate-500">({t('setExecutor')})</span>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <select
+          className="rounded-lg border border-border bg-elevated px-2 py-2 text-sm text-slate-100"
+          value={mode}
+          onChange={(e) => setMode(e.target.value as AppMode)}
+        >
+          <option value="dry-run">{t('modeOptDryRun')}</option>
+          <option value="suggestion">{t('modeOptSuggestion')}</option>
+          <option value="confirmed-action">{t('modeOptConfirmed')}</option>
+          <option value="simulation">{t('modeOptSimulation')}</option>
+        </select>
+        <select
+          className="rounded border border-border bg-elevated px-2 py-2 text-sm"
+          value={strategyId}
+          onChange={(e) => setStrategyId(e.target.value)}
+        >
+          <option value="">{t('liveStrategy')}</option>
+          {props.strategies.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <input
+          className="min-w-[240px] flex-1 rounded border border-border bg-elevated px-2 py-2 text-sm"
+          placeholder={t('liveUrlPh')}
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <input
+          className="w-28 rounded border border-border bg-elevated px-2 py-2 text-sm"
+          value={bankroll}
+          onChange={(e) => setBankroll(e.target.value)}
+        />
+        <button
+          type="button"
+          className="rounded bg-accent px-3 py-2 text-sm text-white"
+          onClick={async () => {
+            setTimeline([])
+            await props.api.session.start({
+              mode,
+              strategyId,
+              initialBankroll: Number.parseFloat(bankroll),
+              startUrl: url.trim() ? url.trim() : undefined
+            })
+            void refreshStatus()
+          }}
+        >
+          {t('start')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-slate-200 px-3 py-2 text-sm dark:bg-slate-800"
+          onClick={() => void props.api.session.pause()}
+        >
+          {t('pause')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-slate-200 px-3 py-2 text-sm dark:bg-slate-800"
+          onClick={() => void props.api.session.resume()}
+        >
+          {t('resume')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-red-700 px-3 py-2 text-sm text-white"
+          onClick={() => void props.api.session.stop()}
+        >
+          {t('stop')}
+        </button>
+        <button type="button" className="rounded border px-3 py-2 text-sm" onClick={() => void refreshStatus()}>
+          {t('refreshStatus')}
+        </button>
+      </div>
+
+      {Boolean(pending) &&
+        props.settings.executorEnabled &&
+        !props.settings.dryRunOnly &&
+        mode === 'confirmed-action' && (
+          <div className="mt-4 rounded border border-amber-500 bg-amber-50 p-4 text-sm dark:bg-amber-950">
+            <div className="font-medium">{t('confirmRequired')}</div>
+            <pre className="mt-2 max-h-40 overflow-auto text-xs">{JSON.stringify(pending, null, 2)}</pre>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="rounded bg-emerald-600 px-3 py-2 text-white"
+                onClick={() =>
+                  void props.api.session
+                    .confirm({ sessionId: sessionId ?? 'unknown', accept: true })
+                    .then(refreshStatus)
+                }
+              >
+                {t('confirmAction')}
+              </button>
+              <button
+                type="button"
+                className="rounded bg-slate-300 px-3 py-2 dark:bg-slate-700"
+                onClick={() =>
+                  void props.api.session
+                    .confirm({ sessionId: sessionId ?? 'unknown', accept: false })
+                    .then(refreshStatus)
+                }
+              >
+                {t('decline')}
+              </button>
+            </div>
+          </div>
+        )}
+
+      <div className="mt-6">
+        <h2 className="text-sm font-semibold">{t('timelineTitle')}</h2>
+        <div className="mt-2 max-h-[420px] overflow-auto rounded border border-border bg-elevated">
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-elevated">
+              <tr>
+                <th className="p-2">{t('colTime')}</th>
+                <th className="p-2">{t('colKind')}</th>
+                <th className="p-2">{t('colPayload')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {timeline.map((row, i) => {
+                const r = row as { at?: number; kind?: string; payload?: unknown }
+                return (
+                  <tr key={i} className="border-t border-border">
+                    <td className="p-2 font-mono">{r.at}</td>
+                    <td className="p-2">{r.kind}</td>
+                    <td className="p-2 font-mono">{JSON.stringify(r.payload)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function LogsPage(props: { api: ReturnType<typeof getApi> }): React.ReactElement {
+  const { t } = useI18n()
+  const [rows, setRows] = useState<{ id: string; level: string; message: string; at: number }[]>([])
+  const [filter, setFilter] = useState('')
+
+  const load = async () => {
+    const r = await props.api.logs.query({ limit: 200 })
+    setRows(r)
+  }
+
+  useEffect(() => {
+    void load()
+  }, [props.api])
+
+  const filtered = rows.filter((r) => (filter ? r.level === filter || r.message.includes(filter) : true))
+
+  return (
+    <div>
+      <h1 className="text-xl font-semibold">{t('logsTitle')}</h1>
+      <div className="mt-3 flex gap-2">
+        <input
+          className="rounded border border-border px-2 py-2 text-sm"
+          placeholder={t('logsFilterPh')}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <button type="button" className="rounded border px-3 py-2 text-sm" onClick={() => void load()}>
+          {t('refresh')}
+        </button>
+      </div>
+      <table className="mt-4 w-full text-left text-sm">
+        <thead>
+          <tr>
+            <th className="p-2">{t('colAt')}</th>
+            <th className="p-2">{t('colLevel')}</th>
+            <th className="p-2">{t('colMessage')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((r) => (
+            <tr key={r.id} className="border-t border-border">
+              <td className="p-2 font-mono text-xs">{new Date(r.at).toISOString()}</td>
+              <td className="p-2">{r.level}</td>
+              <td className="p-2">{r.message}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function SettingsPage(props: {
+  settings: AppSettings
+  onChange: (p: Partial<AppSettings>) => Promise<void>
+}): React.ReactElement {
+  const { t } = useI18n()
+  return (
+    <div>
+      <h1 className="text-xl font-semibold">{t('settingsTitle')}</h1>
+      <div className="mt-4 max-w-lg space-y-4">
+        <label className="flex items-center justify-between gap-4 text-sm">
+          <span>{t('setDryRun')}</span>
+          <input
+            type="checkbox"
+            checked={props.settings.dryRunOnly}
+            onChange={(e) => void props.onChange({ dryRunOnly: e.target.checked })}
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4 text-sm">
+          <span>{t('setExecutor')}</span>
+          <input
+            type="checkbox"
+            checked={props.settings.executorEnabled}
+            onChange={(e) => void props.onChange({ executorEnabled: e.target.checked })}
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4 text-sm">
+          <span>{t('setConsent')}</span>
+          <input
+            type="checkbox"
+            checked={props.settings.perSessionExecutionConsent}
+            onChange={(e) => void props.onChange({ perSessionExecutionConsent: e.target.checked })}
+          />
+        </label>
+        <label className="block text-sm">
+          <div className="mb-1 text-xs uppercase text-slate-500">{t('setLocale')}</div>
+          <select
+            className="w-full rounded border border-border bg-elevated px-2 py-2"
+            value={props.settings.locale}
+            onChange={(e) => void props.onChange({ locale: e.target.value as AppSettings['locale'] })}
+          >
+            <option value="en">{t('langEn')}</option>
+            <option value="ru">{t('langRu')}</option>
+          </select>
+        </label>
+        <label className="block text-sm">
+          <div className="mb-1 text-xs uppercase text-slate-500">{t('setTheme')}</div>
+          <select
+            className="w-full rounded border border-border bg-elevated px-2 py-2"
+            value={props.settings.theme}
+            onChange={(e) =>
+              void props.onChange({ theme: e.target.value as AppSettings['theme'] })
+            }
+          >
+            <option value="system">{t('themeSystem')}</option>
+            <option value="light">{t('themeLight')}</option>
+            <option value="dark">{t('themeDark')}</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  )
+}

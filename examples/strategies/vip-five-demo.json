@@ -1,0 +1,16 @@
+{
+  "id": "vip-five-demo",
+  "name": "VIP five (5 номеров, уровни 1–10)",
+  "tableName": "European",
+  "baseUnit": 1,
+  "progression": {
+    "type": "vip_five",
+    "numbers": [4, 8, 18, 19, 20]
+  },
+  "resetOnWin": false,
+  "allowedBetTypes": ["straight"],
+  "primaryTarget": { "kind": "straight", "number": 4 },
+  "customTables": [],
+  "trigger": { "kind": "always" },
+  "stopRules": {}
+}

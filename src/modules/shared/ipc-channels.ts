@@ -1,0 +1,28 @@
+/** Channel names — keep in sync with preload + main + ipc-contract */
+export const IPC_CHANNELS = {
+  settingsGet: 'settings:get',
+  settingsSet: 'settings:set',
+  strategiesList: 'strategies:list',
+  strategyGet: 'strategy:get',
+  strategySave: 'strategy:save',
+  strategyDelete: 'strategy:delete',
+  strategyValidate: 'strategy:validate',
+  simulationRun: 'simulation:run',
+  simulationRunHistorical: 'simulation:run-historical',
+  simulationExport: 'simulation:export',
+  simulationGet: 'simulation:get',
+  sessionStart: 'session:start',
+  sessionStop: 'session:stop',
+  sessionPause: 'session:pause',
+  sessionResume: 'session:resume',
+  sessionStatus: 'session:status',
+  sessionTimeline: 'session:timeline',
+  sessionConfirm: 'session:confirm',
+  logsQuery: 'logs:query',
+  browserLaunch: 'browser:launch',
+  browserClose: 'browser:close',
+  importSpinsCsv: 'import:spins-csv',
+  exportResultsCsv: 'export:results-csv',
+  dialogPickFile: 'dialog:pick-file',
+  analyticsOverview: 'analytics:overview'
+} as const

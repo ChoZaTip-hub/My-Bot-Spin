@@ -1,0 +1,13 @@
+{
+  "id": "example-custom",
+  "name": "Custom table sample",
+  "tableName": "European",
+  "baseUnit": 1,
+  "progression": { "type": "sequence", "multipliers": [1, 2, 4] },
+  "resetOnWin": true,
+  "allowedBetTypes": ["custom_table"],
+  "primaryTarget": { "kind": "custom_table", "tableName": "neighbors" },
+  "customTables": [{ "name": "neighbors", "numbers": [0, 3, 26, 32, 15] }],
+  "trigger": { "kind": "after_spin_count", "minHistory": 1 },
+  "stopRules": { "maxProgressionDepth": 6 }
+}
