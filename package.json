@@ -34,7 +34,7 @@
     "@vitejs/plugin-react": "^4.4.1",
     "autoprefixer": "^10.4.21",
     "drizzle-kit": "^0.31.10",
-    "electron": "^39.8.5",
+    "electron": "^31.7.7",
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",
     "eslint": "^9.25.1",

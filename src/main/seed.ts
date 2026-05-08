@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { eq } from 'drizzle-orm'
 import type { DbClient } from '@modules/db/client'
 import * as schema from '@modules/db/schema'
 import { StrategyConfigSchema } from '@modules/shared/strategy-config'
@@ -78,24 +79,33 @@ const BUILT_INS = [
 ]
 
 export async function seedIfEmpty(db: DbClient['db'], logger: Logger): Promise<void> {
-  const existing = await db.select().from(schema.strategies).limit(1)
-  if (existing.length) return
-  logger.log('info', 'Seeding built-in strategies')
+  logger.log('info', 'Ensuring built-in strategies')
   const now = new Date()
   for (const b of BUILT_INS) {
     const cfg = StrategyConfigSchema.parse(b.config)
-    await db.insert(schema.strategies).values({
-      id: cfg.id,
-      name: cfg.name,
-      createdAt: now,
-      updatedAt: now
-    })
-    await db.insert(schema.strategyVersions).values({
-      id: randomUUID(),
-      strategyId: cfg.id,
-      version: 1,
-      configJson: JSON.stringify(cfg),
-      createdAt: now
-    })
+    const existing = await db.select().from(schema.strategies).where(eq(schema.strategies.id, cfg.id)).limit(1)
+    if (!existing.length) {
+      logger.log('info', 'Seeding missing built-in strategy', { strategyId: cfg.id })
+      await db.insert(schema.strategies).values({
+        id: cfg.id,
+        name: cfg.name,
+        createdAt: now,
+        updatedAt: now
+      })
+    }
+    const versions = await db
+      .select()
+      .from(schema.strategyVersions)
+      .where(eq(schema.strategyVersions.strategyId, cfg.id))
+      .limit(1)
+    if (!versions.length) {
+      await db.insert(schema.strategyVersions).values({
+        id: randomUUID(),
+        strategyId: cfg.id,
+        version: 1,
+        configJson: JSON.stringify(cfg),
+        createdAt: now
+      })
+    }
   }
 }
