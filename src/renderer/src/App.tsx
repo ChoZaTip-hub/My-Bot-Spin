@@ -15,11 +15,17 @@ import { StrategyConfigSchema } from '@modules/shared/strategy-config'
 import type { AppLocale } from './i18n/types'
 import type { MessageKey } from './i18n/messages'
 import { translate } from './i18n/messages'
+import {
+  BUILTIN_STRATEGY_ENTRIES,
+  getBuiltinStrategyConfigById
+} from '@modules/shared/builtin-strategies'
 import { I18nProvider, useI18n } from './i18n/context'
 import CasinoDashboard from './casino/CasinoDashboard'
 import { getApi } from './bridge'
 
-type Page = 'dashboard' | 'strategies' | 'simulator' | 'live' | 'logs' | 'settings'
+type Page = 'dashboard' | 'simple' | 'strategies' | 'simulator' | 'live' | 'logs' | 'settings'
+
+const DEFAULT_SIMPLE_TABLE_URL = 'https://fresh.casino/table/galaxsys-roulettex'
 
 function guessLocale(): AppLocale {
   return typeof navigator !== 'undefined' && /^ru/i.test(navigator.language) ? 'ru' : 'en'
@@ -152,6 +158,7 @@ function AppChrome(props: {
 
   const navItems: [Page, MessageKey][] = [
     ['dashboard', 'navDashboard'],
+    ['simple', 'navSimple'],
     ['strategies', 'navStrategies'],
     ['simulator', 'navSimulator'],
     ['live', 'navLive'],
@@ -267,6 +274,14 @@ function AppChrome(props: {
             </div>
           )}
           {page === 'dashboard' && <CasinoDashboard strategies={strategies} />}
+          {page === 'simple' && (
+            <SimpleLaunchPage
+              api={api}
+              strategies={strategies}
+              settings={settings}
+              setSettings={setSettings}
+            />
+          )}
           {page === 'strategies' && (
             <StrategiesPage
               api={api}
@@ -294,6 +309,263 @@ function AppChrome(props: {
   )
 }
 
+function SimpleLaunchPage(props: {
+  api: ReturnType<typeof getApi>
+  strategies: { id: string; name: string }[]
+  settings: AppSettings
+  setSettings: (s: AppSettings) => void
+}): React.ReactElement {
+  const { t } = useI18n()
+  const [strategyId, setStrategyId] = useState('')
+  const [url, setUrl] = useState(DEFAULT_SIMPLE_TABLE_URL)
+  const [bankroll, setBankroll] = useState('1000')
+  const [takeProfit, setTakeProfit] = useState('')
+  const [maxLoss, setMaxLoss] = useState('')
+  const [observeOnly, setObserveOnly] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+  const [timeline, setTimeline] = useState<unknown[]>([])
+  const [pending, setPending] = useState<unknown>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const off = props.api.onTimeline((ev) => {
+      setTimeline((prev) => [...prev, ev])
+    })
+    return off
+  }, [props.api])
+
+  const refreshStatus = async () => {
+    const s = await props.api.session.status()
+    setPending(s.pending)
+    setSessionId(s.sessionId)
+  }
+
+  const onStart = async (): Promise<void> => {
+    setSessionError(null)
+    if (!strategyId.trim()) {
+      setSessionError(t('liveStrategyRequired'))
+      return
+    }
+    const br = Number.parseFloat(bankroll)
+    if (!Number.isFinite(br) || br <= 0) {
+      setSessionError(t('liveBankrollInvalid'))
+      return
+    }
+    const tpRaw = takeProfit.trim()
+    const mlRaw = maxLoss.trim()
+    const tp = tpRaw ? Number.parseFloat(tpRaw) : undefined
+    const ml = mlRaw ? Number.parseFloat(mlRaw) : undefined
+    if (tpRaw && (!Number.isFinite(tp) || (tp ?? 0) <= 0)) {
+      setSessionError(t('liveBankrollInvalid'))
+      return
+    }
+    if (mlRaw && (!Number.isFinite(ml) || (ml ?? 0) <= 0)) {
+      setSessionError(t('liveBankrollInvalid'))
+      return
+    }
+    try {
+      if (observeOnly) {
+        const next = await props.api.settings.set({ dryRunOnly: true })
+        props.setSettings(next)
+      } else {
+        const next = await props.api.settings.set({
+          dryRunOnly: false,
+          executorEnabled: true,
+          perSessionExecutionConsent: true
+        })
+        props.setSettings(next)
+      }
+    } catch (e) {
+      setSessionError(e instanceof Error ? e.message : String(e))
+      return
+    }
+
+    setTimeline([])
+    try {
+      await props.api.session.start({
+        mode: observeOnly ? 'dry-run' : 'confirmed-action',
+        strategyId: strategyId.trim(),
+        initialBankroll: br,
+        startUrl: url.trim() ? url.trim() : undefined,
+        ...(tp != null && Number.isFinite(tp) && tp > 0 ? { takeProfit: tp } : {}),
+        ...(ml != null && Number.isFinite(ml) && ml > 0 ? { maxLoss: ml } : {})
+      })
+      await refreshStatus()
+    } catch (e) {
+      setSessionError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <h1 className="font-display text-2xl font-bold text-gold">{t('simpleTitle')}</h1>
+      <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{t('simpleIntro')}</p>
+      <p className="text-xs text-slate-500">{t('simpleProfitHint')}</p>
+      {sessionError && (
+        <div
+          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-danger dark:border-red-900 dark:bg-red-950"
+          role="alert"
+        >
+          {sessionError}
+        </div>
+      )}
+      <div className="grid max-w-xl gap-3 rounded-lg border border-border bg-elevated p-4">
+        <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('simpleStrategy')}</span>
+          <select
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={strategyId}
+            onChange={(e) => void setStrategyId(e.target.value)}
+          >
+            <option value="">{t('simSelect')}</option>
+            {props.strategies.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('simpleUrl')}</span>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm font-mono"
+            value={url}
+            onChange={(e) => void setUrl(e.target.value)}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('simpleBankroll')}</span>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            value={bankroll}
+            onChange={(e) => void setBankroll(e.target.value)}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('simpleTakeProfit')}</span>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            placeholder={t('simpleTakeProfitPh')}
+            value={takeProfit}
+            onChange={(e) => void setTakeProfit(e.target.value)}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('simpleMaxLoss')}</span>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            placeholder={t('simpleMaxLossPh')}
+            value={maxLoss}
+            onChange={(e) => void setMaxLoss(e.target.value)}
+          />
+        </label>
+        <label className="flex cursor-pointer items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={observeOnly}
+            onChange={(e) => void setObserveOnly(e.target.checked)}
+          />
+          {t('simpleObserveOnly')}
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded bg-accent px-4 py-2 text-sm font-medium text-white"
+          onClick={() => void onStart()}
+        >
+          {t('start')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-slate-200 px-3 py-2 text-sm dark:bg-slate-800"
+          onClick={() => void props.api.session.pause()}
+        >
+          {t('pause')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-slate-200 px-3 py-2 text-sm dark:bg-slate-800"
+          onClick={() => void props.api.session.resume()}
+        >
+          {t('resume')}
+        </button>
+        <button
+          type="button"
+          className="rounded bg-red-700 px-3 py-2 text-sm text-white"
+          onClick={() => void props.api.session.stop()}
+        >
+          {t('stop')}
+        </button>
+        <button type="button" className="rounded border px-3 py-2 text-sm" onClick={() => void refreshStatus()}>
+          {t('refreshStatus')}
+        </button>
+      </div>
+
+      {Boolean(pending) &&
+        props.settings.executorEnabled &&
+        !props.settings.dryRunOnly &&
+        !observeOnly && (
+          <div className="mt-4 rounded border border-amber-500 bg-amber-50 p-4 text-sm dark:bg-amber-950">
+            <div className="font-medium">{t('confirmRequired')}</div>
+            <pre className="mt-2 max-h-40 overflow-auto text-xs">{JSON.stringify(pending, null, 2)}</pre>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="rounded bg-emerald-600 px-3 py-2 text-white"
+                onClick={() =>
+                  void props.api.session
+                    .confirm({ sessionId: sessionId ?? 'unknown', accept: true })
+                    .then(refreshStatus)
+                }
+              >
+                {t('confirmAction')}
+              </button>
+              <button
+                type="button"
+                className="rounded bg-slate-300 px-3 py-2 dark:bg-slate-700"
+                onClick={() =>
+                  void props.api.session
+                    .confirm({ sessionId: sessionId ?? 'unknown', accept: false })
+                    .then(refreshStatus)
+                }
+              >
+                {t('decline')}
+              </button>
+            </div>
+          </div>
+        )}
+
+      <div className="mt-6">
+        <h2 className="text-sm font-semibold">{t('timelineTitle')}</h2>
+        <div className="mt-2 max-h-[420px] overflow-auto rounded border border-border bg-elevated">
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-elevated">
+              <tr>
+                <th className="p-2">{t('colTime')}</th>
+                <th className="p-2">{t('colKind')}</th>
+                <th className="p-2">{t('colPayload')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {timeline.map((row, i) => {
+                const r = row as { at?: number; kind?: string; payload?: unknown }
+                return (
+                  <tr key={i} className="border-t border-border">
+                    <td className="p-2 font-mono">{r.at}</td>
+                    <td className="p-2">{r.kind}</td>
+                    <td className="p-2 font-mono">{JSON.stringify(r.payload)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StrategiesPage(props: {
   api: ReturnType<typeof getApi>
   strategies: { id: string; name: string }[]
@@ -301,21 +573,45 @@ function StrategiesPage(props: {
 }): React.ReactElement {
   const { t } = useI18n()
   const [json, setJson] = useState('')
-  const [validation, setValidation] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
+
+  const presetList =
+    props.strategies.length > 0
+      ? props.strategies
+      : BUILTIN_STRATEGY_ENTRIES.map((b) => ({ id: b.id, name: b.name }))
 
   return (
     <div>
       <h1 className="text-xl font-semibold">{t('stratTitle')}</h1>
       <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{t('stratIntro')}</p>
       <div className="mt-4 flex flex-wrap gap-2">
-        {props.strategies.map((s) => (
+        {presetList.map((s) => (
           <button
             key={s.id}
             type="button"
             className="rounded border border-border px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-900"
             onClick={async () => {
-              const cfg = await props.api.strategies.get(s.id)
-              setJson(JSON.stringify(cfg, null, 2))
+              setFeedback(null)
+              try {
+                const fromDb = await props.api.strategies.get(s.id)
+                const cfg = fromDb ?? getBuiltinStrategyConfigById(s.id)
+                if (cfg == null) {
+                  setFeedback({ kind: 'error', text: t('stratLoadFailed') })
+                  return
+                }
+                setJson(JSON.stringify(cfg, null, 2))
+              } catch (e) {
+                const builtin = getBuiltinStrategyConfigById(s.id)
+                if (builtin != null) {
+                  setJson(JSON.stringify(builtin, null, 2))
+                  setFeedback(null)
+                } else {
+                  setFeedback({
+                    kind: 'error',
+                    text: e instanceof Error ? e.message : String(e)
+                  })
+                }
+              }
             }}
           >
             {s.name}
@@ -329,9 +625,15 @@ function StrategiesPage(props: {
         onChange={(e) => setJson(e.target.value)}
         placeholder={t('stratPlaceholder')}
       />
-      {validation && (
-        <pre className="mt-2 max-h-40 overflow-auto rounded bg-red-50 p-2 text-xs text-danger dark:bg-red-950">
-          {validation}
+      {feedback && (
+        <pre
+          className={`mt-2 max-h-40 overflow-auto rounded p-2 text-xs ${
+            feedback.kind === 'error'
+              ? 'bg-red-50 text-danger dark:bg-red-950'
+              : 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100'
+          }`}
+        >
+          {feedback.text}
         </pre>
       )}
       <div className="mt-3 flex gap-2">
@@ -340,15 +642,20 @@ function StrategiesPage(props: {
           className="rounded bg-slate-200 px-3 py-2 text-sm dark:bg-slate-800"
           onClick={async () => {
             try {
-              const parsed = JSON.parse(json) as unknown
+              const trimmed = json.trim()
+              if (!trimmed) {
+                setFeedback({ kind: 'error', text: t('stratEmpty') })
+                return
+              }
+              const parsed = JSON.parse(trimmed) as unknown
               const r = await props.api.strategies.validate(parsed)
               if (r.ok) {
-                setValidation(null)
+                setFeedback(null)
               } else {
-                setValidation(JSON.stringify(r.errors, null, 2))
+                setFeedback({ kind: 'error', text: JSON.stringify(r.errors, null, 2) })
               }
             } catch (e) {
-              setValidation(e instanceof Error ? e.message : String(e))
+              setFeedback({ kind: 'error', text: e instanceof Error ? e.message : String(e) })
             }
           }}
         >
@@ -358,9 +665,20 @@ function StrategiesPage(props: {
           type="button"
           className="rounded bg-accent px-3 py-2 text-sm text-white"
           onClick={async () => {
-            const parsed = JSON.parse(json) as unknown
-            await props.api.strategies.save(parsed)
-            props.onRefresh()
+            setFeedback(null)
+            try {
+              const trimmed = json.trim()
+              if (!trimmed) {
+                setFeedback({ kind: 'error', text: t('stratEmpty') })
+                return
+              }
+              const parsed = JSON.parse(trimmed) as unknown
+              await props.api.strategies.save(parsed)
+              props.onRefresh()
+              setFeedback({ kind: 'success', text: t('stratSaved') })
+            } catch (e) {
+              setFeedback({ kind: 'error', text: e instanceof Error ? e.message : String(e) })
+            }
           }}
         >
           {t('save')}
@@ -568,6 +886,7 @@ function LivePage(props: {
   const [timeline, setTimeline] = useState<unknown[]>([])
   const [pending, setPending] = useState<unknown>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
 
   useEffect(() => {
     const off = props.api.onTimeline((ev) => {
@@ -585,6 +904,14 @@ function LivePage(props: {
   return (
     <div className="space-y-5">
       <h1 className="font-display text-2xl font-bold text-gold">{t('liveTitle')}</h1>
+      {sessionError && (
+        <div
+          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-danger dark:border-red-900 dark:bg-red-950"
+          role="alert"
+        >
+          {sessionError}
+        </div>
+      )}
       <div className="grid gap-3 md:grid-cols-3">
         <button
           type="button"
@@ -672,14 +999,28 @@ function LivePage(props: {
           type="button"
           className="rounded bg-accent px-3 py-2 text-sm text-white"
           onClick={async () => {
+            setSessionError(null)
+            if (!strategyId.trim()) {
+              setSessionError(t('liveStrategyRequired'))
+              return
+            }
+            const br = Number.parseFloat(bankroll)
+            if (!Number.isFinite(br) || br <= 0) {
+              setSessionError(t('liveBankrollInvalid'))
+              return
+            }
             setTimeline([])
-            await props.api.session.start({
-              mode,
-              strategyId,
-              initialBankroll: Number.parseFloat(bankroll),
-              startUrl: url.trim() ? url.trim() : undefined
-            })
-            void refreshStatus()
+            try {
+              await props.api.session.start({
+                mode,
+                strategyId: strategyId.trim(),
+                initialBankroll: br,
+                startUrl: url.trim() ? url.trim() : undefined
+              })
+              await refreshStatus()
+            } catch (e) {
+              setSessionError(e instanceof Error ? e.message : String(e))
+            }
           }}
         >
           {t('start')}

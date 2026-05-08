@@ -24,6 +24,7 @@ import { GenericDomObserver } from '../playwright/GenericDomObserver'
 import { GalaxsysRouletteXExecutor } from '../playwright/GalaxsysRouletteXExecutor'
 import { GalaxsysRouletteXObserver } from '../playwright/GalaxsysRouletteXObserver'
 import { LiveSessionController } from '../session/LiveSessionController'
+import type { RiskLimits } from '@modules/risk-manager/types'
 
 /** Synthetic wheel order for mock observer (no live page). */
 const EURO_WHEEL_SEQ = [
@@ -34,9 +35,10 @@ let mockWheelCursor = 0
 
 const DEFAULT_SETTINGS: AppSettings = SettingsSchema.parse({})
 
+/** Fresh Casino slug may be `galaxsys` or `galaxys` — both must map to the real Playwright adapter (not mock). */
 function isGalaxsysRouletteXUrl(url?: string): boolean {
   if (!url) return false
-  return /fresh\.casino\/table\/galaxsys-roulettex/i.test(url)
+  return /https?:\/\/(?:www\.)?fresh\.casino\/table\/galax(s)?ys-roulettex(?:\/|[?#]|$)/i.test(url.trim())
 }
 
 async function readSettings(db: DbClient['db']): Promise<AppSettings> {
@@ -255,12 +257,16 @@ export function registerIpc(deps: {
   ipcMain.handle(IPC_CHANNELS.sessionStart, async (_e, req: unknown) => {
     const parsed = SessionStartRequestSchema.parse(req)
     const settings = await readSettings(db)
+    const strategyIdNorm =
+      typeof parsed.strategyId === 'string' && parsed.strategyId.trim() !== ''
+        ? parsed.strategyId.trim()
+        : undefined
     let strategy = parsed.strategyConfig
-    if (!strategy && parsed.strategyId) {
+    if (!strategy && strategyIdNorm) {
       const v = await db
         .select()
         .from(schema.strategyVersions)
-        .where(eq(schema.strategyVersions.strategyId, parsed.strategyId))
+        .where(eq(schema.strategyVersions.strategyId, strategyIdNorm))
         .orderBy(desc(schema.strategyVersions.version))
         .limit(1)
       if (!v.length) throw new Error('Strategy not found')
@@ -292,13 +298,22 @@ export function registerIpc(deps: {
     const executor = page && parsed.startUrl && isGalaxsysRouletteXUrl(parsed.startUrl)
       ? new GalaxsysRouletteXExecutor(page)
       : new MockTableExecutor()
+    const riskLimits: RiskLimits = {
+      stopLoss: parsed.maxLoss ?? 1_000_000,
+      stopWin: parsed.takeProfit ?? Math.max(1, Math.floor(parsed.initialBankroll * 0.5)),
+      maxProgressionDepth: 1_000,
+      maxSessionMs: 1000 * 60 * 60 * 6,
+      maxTotalBets: 100_000,
+      cooldownMs: 0
+    }
     const { sessionId } = await live.start({
       mode: parsed.mode,
       strategy,
       settings,
       initialBankroll: parsed.initialBankroll,
       observer,
-      executor
+      executor,
+      riskLimits
     })
     logger.log('info', 'Session started', { sessionId, mode: parsed.mode })
     return { sessionId }

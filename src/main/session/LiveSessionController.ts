@@ -17,7 +17,8 @@ import {
   roundOutcomeHit,
   vipSessionSuccess
 } from '@modules/vip-five/vip-progress'
-import type { TableObserver } from '@modules/parser/types'
+import type { TableObservation, TableObserver } from '@modules/parser/types'
+import type { RiskLimits } from '@modules/risk-manager/types'
 import type { TableExecutor } from '@modules/executor/types'
 import type { Logger } from '../logger'
 import type { BrowserHost } from '../playwright/BrowserHost'
@@ -51,6 +52,12 @@ export class LiveSessionController {
   private vipSpinAnchor: number | null = null
   /** The exact five numbers used for currently open VIP bet. */
   private vipOpenBetNumbers: number[] = []
+  /** Throttle "no numbers from page" notes for VIP tick (observer empty). */
+  private vipLastEmptyNoteAt = 0
+  /** Round / ticket id when the open VIP bet was placed (detect new spin even if winning number repeats). */
+  private vipRoundIdAtBetOpen: string | null = null
+  /** First observed table balance in this session — baseline for take-profit / max-loss. */
+  private sessionRiskBaseline: number | null = null
 
   constructor(
     private readonly db: DbClient['db'],
@@ -61,6 +68,76 @@ export class LiveSessionController {
 
   getTimeline(): TimelineEntry[] {
     return [...this.timeline]
+  }
+
+  private computeSessionPnL(obs: TableObservation): { sessionProfit: number; sessionLoss: number } {
+    if (obs.balance == null) return { sessionProfit: 0, sessionLoss: 0 }
+    if (this.sessionRiskBaseline === null) {
+      this.sessionRiskBaseline = obs.balance
+    }
+    const delta = obs.balance - this.sessionRiskBaseline
+    return {
+      sessionProfit: Math.max(0, delta),
+      sessionLoss: Math.max(0, -delta)
+    }
+  }
+
+  /**
+   * If the policy decision does not require an extra UI confirm step, run the executor here.
+   * (When `perSessionExecutionConsent` is already true, {@link Decision.requiresConfirmation} is false.)
+   */
+  private async maybeAutoExecutePlaceBet(
+    d: Decision,
+    params: {
+      mode: AppMode
+      settings: AppSettings
+      executor: TableExecutor
+    }
+  ): Promise<void> {
+    if (d.action !== 'PLACE_BET' || !d.stakePlan?.length) return
+
+    if (params.settings.dryRunOnly || params.mode !== 'confirmed-action') {
+      this.push({ kind: 'note', payload: { text: 'Execution skipped by policy/settings' } })
+      return
+    }
+
+    if (d.requiresConfirmation) {
+      return
+    }
+
+    if (!params.settings.executorEnabled) {
+      this.push({
+        kind: 'note',
+        payload: { text: 'Execution skipped: executor disabled in settings' }
+      })
+      return
+    }
+
+    try {
+      const r = await params.executor.placeBet(d.stakePlan)
+      this.push({
+        kind: 'note',
+        payload: {
+          text: 'Executor placeBet',
+          executorId: params.executor.id,
+          result: r
+        }
+      })
+      if (params.executor.id === 'mock' && r.ok) {
+        this.push({
+          kind: 'note',
+          payload: {
+            text:
+              'Mock executor — no real clicks on the table. Set start URL to https://fresh.casino/table/galaxsys-roulettex or …/galaxys-roulettex so the Galaxsys adapter loads.'
+          }
+        })
+      }
+      this.pendingDecision = null
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.logger.log('error', 'Auto placeBet failed', { error: msg })
+      this.push({ kind: 'note', payload: { text: 'Executor placeBet failed', error: msg } })
+    }
   }
 
   private push(entry: Omit<TimelineEntry, 'id' | 'at'> & { id?: string; at?: number }) {
@@ -84,6 +161,7 @@ export class LiveSessionController {
     initialBankroll: number
     observer: TableObserver
     executor: TableExecutor
+    riskLimits: RiskLimits
   }): Promise<{ sessionId: string }> {
     await this.stop()
     const now = Date.now()
@@ -100,6 +178,9 @@ export class LiveSessionController {
     this.vipAwaitingOutcome = false
     this.vipSpinAnchor = null
     this.vipOpenBetNumbers = []
+    this.vipLastEmptyNoteAt = 0
+    this.vipRoundIdAtBetOpen = null
+    this.sessionRiskBaseline = null
 
     await this.db.insert(schema.sessions).values({
       id: sessionId,
@@ -115,15 +196,7 @@ export class LiveSessionController {
     })
 
     const table = TableConfigSchema.parse({ wheel: 'european' })
-    const riskLimits = {
-      stopLoss: 1_000_000,
-      // User-defined operating cap for live play: stop after +50% session profit.
-      stopWin: Math.max(1, Math.floor(params.initialBankroll * 0.5)),
-      maxProgressionDepth: 1_000,
-      maxSessionMs: 1000 * 60 * 60 * 6,
-      maxTotalBets: 100_000,
-      cooldownMs: 0
-    }
+    const riskLimits = params.riskLimits
 
     this.timer = setInterval(async () => {
       if (!this.sessionId || this.paused) return
@@ -134,6 +207,7 @@ export class LiveSessionController {
         }
 
         const obs = await params.observer.observe()
+        const { sessionProfit, sessionLoss } = this.computeSessionPnL(obs)
         if (obs.recentNumbers.length) {
           const last = obs.recentNumbers[0]!
           if (this.spinHistory.at(-1) !== last) {
@@ -167,8 +241,8 @@ export class LiveSessionController {
             executorEnabled: params.settings.executorEnabled
           },
           riskInput: {
-            sessionLoss: 0,
-            sessionProfit: 0,
+            sessionLoss,
+            sessionProfit,
             progressionDepth: this.progressionStep,
             sessionStartedAt: now,
             now: Date.now(),
@@ -184,6 +258,18 @@ export class LiveSessionController {
           this.push({ kind: 'risk', payload: { flag: f } })
         }
 
+        if (policyDecision.action === 'HALT') {
+          this.push({ kind: 'decision', payload: { decision: policyDecision } })
+          await this.db.insert(schema.decisions).values({
+            id: randomUUID(),
+            sessionId: this.sessionId,
+            payloadJson: JSON.stringify(policyDecision),
+            createdAt: new Date()
+          })
+          await this.stop()
+          return
+        }
+
         this.push({ kind: 'decision', payload: { decision: policyDecision } })
         await this.db.insert(schema.decisions).values({
           id: randomUUID(),
@@ -194,11 +280,7 @@ export class LiveSessionController {
 
         this.pendingDecision = policyDecision
 
-        if (policyDecision.action === 'PLACE_BET' && policyDecision.stakePlan?.length) {
-          if (params.settings.dryRunOnly || params.mode !== 'confirmed-action') {
-            this.push({ kind: 'note', payload: { text: 'Execution skipped by policy/settings' } })
-          }
-        }
+        await this.maybeAutoExecutePlaceBet(policyDecision, params)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         this.logger.log('error', 'Live session tick failed', { error: msg })
@@ -237,22 +319,38 @@ export class LiveSessionController {
       executor: TableExecutor
     },
     sessionStartedAt: number,
-    riskLimits: {
-      stopLoss: number
-      stopWin: number
-      maxProgressionDepth: number
-      maxSessionMs: number
-      maxTotalBets: number
-      cooldownMs: number
-    }
+    riskLimits: RiskLimits
   ): Promise<void> {
     if (!this.sessionId) return
     const obs = await params.observer.observe()
-    if (!obs.recentNumbers.length) return
+    const { sessionProfit, sessionLoss } = this.computeSessionPnL(obs)
+    if (!obs.recentNumbers.length) {
+      const t = Date.now()
+      if (t - this.vipLastEmptyNoteAt > 12_000) {
+        this.vipLastEmptyNoteAt = t
+        this.push({
+          kind: 'note',
+          payload: {
+            text:
+              'Стол открыт, но номер последнего спина пока не распознан (часто игра в iframe или другая вёрстка). Откройте боковую «История» на столе и дождитесь спина. Проверьте URL: …/galaxsys-roulettex',
+            observerHint: obs.rawNote ?? ''
+          }
+        })
+      }
+      return
+    }
     const last = obs.recentNumbers[0]!
 
-    if (this.vipAwaitingOutcome && last === this.vipSpinAnchor) {
-      return
+    if (this.vipAwaitingOutcome) {
+      const roundAdvanced =
+        this.vipRoundIdAtBetOpen != null &&
+        obs.roundId != null &&
+        obs.roundId !== this.vipRoundIdAtBetOpen
+      /** Without round id, same winning number twice in a row would deadlock — round id fixes that. */
+      const numberAdvanced = last !== this.vipSpinAnchor
+      if (!roundAdvanced && !numberAdvanced) {
+        return
+      }
     }
 
     const prog = params.strategy.progression
@@ -312,8 +410,8 @@ export class LiveSessionController {
         executorEnabled: params.settings.executorEnabled
       },
       riskInput: {
-        sessionLoss: 0,
-        sessionProfit: 0,
+        sessionLoss,
+        sessionProfit,
         progressionDepth: this.vipRoundWins.length,
         sessionStartedAt,
         now: Date.now(),
@@ -328,6 +426,18 @@ export class LiveSessionController {
       this.push({ kind: 'risk', payload: { flag: f } })
     }
 
+    if (policyDecision.action === 'HALT') {
+      this.push({ kind: 'decision', payload: { decision: policyDecision } })
+      await this.db.insert(schema.decisions).values({
+        id: randomUUID(),
+        sessionId: this.sessionId,
+        payloadJson: JSON.stringify(policyDecision),
+        createdAt: new Date()
+      })
+      await this.stop()
+      return
+    }
+
     this.push({ kind: 'decision', payload: { decision: policyDecision } })
     await this.db.insert(schema.decisions).values({
       id: randomUUID(),
@@ -338,11 +448,7 @@ export class LiveSessionController {
 
     this.pendingDecision = policyDecision
 
-    if (policyDecision.action === 'PLACE_BET' && policyDecision.stakePlan?.length) {
-      if (params.settings.dryRunOnly || params.mode !== 'confirmed-action') {
-        this.push({ kind: 'note', payload: { text: 'Execution skipped by policy/settings' } })
-      }
-    }
+    await this.maybeAutoExecutePlaceBet(policyDecision, params)
 
     this.push({
       kind: 'note',
@@ -361,6 +467,7 @@ export class LiveSessionController {
       : []
     this.vipAwaitingOutcome = true
     this.vipSpinAnchor = last
+    this.vipRoundIdAtBetOpen = obs.roundId ?? null
   }
 
   pause(): void {
@@ -400,6 +507,8 @@ export class LiveSessionController {
     this.vipAwaitingOutcome = false
     this.vipSpinAnchor = null
     this.vipOpenBetNumbers = []
+    this.vipRoundIdAtBetOpen = null
+    this.sessionRiskBaseline = null
   }
 
   getPendingDecision(): Decision | null {

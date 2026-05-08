@@ -1,10 +1,13 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Browser, Page } from 'playwright'
+import type { BrowserContext, Page } from 'playwright'
 import type { Logger } from '../logger'
 
+/** Subfolder under Electron userData — cookies & login persist here between app runs. */
+const PROFILE_DIR_NAME = 'playwright-chromium-profile'
+
 export class BrowserHost {
-  private browser: Browser | null = null
+  private context: BrowserContext | null = null
   private page: Page | null = null
 
   constructor(
@@ -17,22 +20,31 @@ export class BrowserHost {
   }
 
   async launch(startUrl?: string): Promise<void> {
-    if (this.browser) return
-    this.logger.log('info', 'Launching Playwright Chromium (visible, no stealth)')
     const { chromium } = await import('playwright')
-    this.browser = await chromium.launch({ headless: false })
-    const context = await this.browser.newContext()
-    this.page = await context.newPage()
-    if (startUrl) {
+    const profileDir = join(this.userDataDir, PROFILE_DIR_NAME)
+    mkdirSync(profileDir, { recursive: true })
+
+    if (!this.context) {
+      this.logger.log('info', 'Launching Playwright Chromium (persistent profile)', { profileDir })
+      /** Same cookies/localStorage as last time — log in once in this window, then reuse. */
+      this.context = await chromium.launchPersistentContext(profileDir, {
+        headless: false,
+        viewport: { width: 1280, height: 800 },
+        locale: 'ru-RU'
+      })
+      const existing = this.context.pages()
+      this.page = existing[0] ?? (await this.context.newPage())
+    }
+    if (startUrl && this.page) {
       await this.page.goto(startUrl, { waitUntil: 'domcontentloaded' })
     }
   }
 
   async close(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close()
+    if (this.context) {
+      await this.context.close()
     }
-    this.browser = null
+    this.context = null
     this.page = null
   }
 

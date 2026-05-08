@@ -39,7 +39,11 @@ export const SessionStartRequestSchema = z.object({
   strategyId: z.string().optional(),
   strategyConfig: StrategyConfigSchema.optional(),
   initialBankroll: z.number().positive(),
-  startUrl: z.string().url().optional()
+  startUrl: z.string().url().optional(),
+  /** Absolute profit (same currency as table balance) — session stops when reached. */
+  takeProfit: z.number().positive().optional(),
+  /** Absolute loss from session-start balance — session stops when reached. */
+  maxLoss: z.number().positive().optional()
 })
 
 export type SessionStartRequest = z.infer<typeof SessionStartRequestSchema>
