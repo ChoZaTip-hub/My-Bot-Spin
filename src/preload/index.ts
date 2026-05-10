@@ -46,6 +46,30 @@ const api = {
   analytics: {
     overview: () => ipcRenderer.invoke(IPC_CHANNELS.analyticsOverview)
   },
+  teaching: {
+    start: () => ipcRenderer.invoke(IPC_CHANNELS.teachingStart),
+    stop: () => ipcRenderer.invoke(IPC_CHANNELS.teachingStop),
+    events: () => ipcRenderer.invoke(IPC_CHANNELS.teachingEvents),
+    clear: () => ipcRenderer.invoke(IPC_CHANNELS.teachingClear),
+    save: (filename?: string) => ipcRenderer.invoke(IPC_CHANNELS.teachingSave, filename),
+    status: () => ipcRenderer.invoke(IPC_CHANNELS.teachingStatus),
+    saveMapping: (key: string) => ipcRenderer.invoke(IPC_CHANNELS.teachingSaveMapping, key)
+  },
+  assist: {
+    open: () => ipcRenderer.invoke(IPC_CHANNELS.assistOpen),
+    getState: () => ipcRenderer.invoke(IPC_CHANNELS.assistGetState)
+  },
+  feedTables: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.feedTablesList),
+    get: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.feedTablesGet, id),
+    save: (req: unknown) => ipcRenderer.invoke(IPC_CHANNELS.feedTablesSave, req),
+    delete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.feedTablesDelete, id)
+  },
+  onTeachingEvent: (cb: (e: unknown) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, data: unknown) => cb(data)
+    ipcRenderer.on('teaching:event', listener)
+    return () => ipcRenderer.removeListener('teaching:event', listener)
+  },
   onTimeline: (cb: (e: unknown) => void) => {
     const listener = (_: Electron.IpcRendererEvent, data: unknown) => cb(data)
     ipcRenderer.on('session:timeline-event', listener)

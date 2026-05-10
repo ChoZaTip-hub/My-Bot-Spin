@@ -1,5 +1,5 @@
 import type { TableObservation, TableObserver } from '@modules/parser/types'
-import type { Page } from 'playwright'
+import type { Frame, Page } from 'playwright'
 
 function parseFirstNumber(text: string): number | null {
   const compact = text.replace(/(\d)\s+(?=\d)/g, '$1')
@@ -39,6 +39,111 @@ function mergeDedupeNewestFirst(nums: number[], limit: number): number[] {
   return out
 }
 
+/** Walk document + open shadow roots; Galaxsys often nests the grid/history inside shadow DOM. */
+function collectElementsDeep(root: Element | null): Element[] {
+  const out: Element[] = []
+  if (!root) return out
+  const visit = (el: Element): void => {
+    out.push(el)
+    if (el.shadowRoot) {
+      for (const c of el.shadowRoot.children) visit(c as Element)
+    }
+    for (const c of el.children) visit(c as Element)
+  }
+  visit(root)
+  return out
+}
+
+/** Flat text + labeled snippets for regex (history labels may only appear in one leaf). */
+function buildMegaText(doc: Document): string {
+  const chunks: string[] = []
+  const rootEl = doc.documentElement
+  if (!rootEl) return ''
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = (node.textContent ?? '').trim()
+      if (t.length) chunks.push(t)
+      return
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return
+    const el = node as Element
+    const tag = el.tagName.toLowerCase()
+    if (tag === 'script' || tag === 'style' || tag === 'noscript') return
+    if (el.shadowRoot) walk(el.shadowRoot)
+    for (const attr of ['aria-label', 'title', 'alt', 'placeholder']) {
+      const a = el.getAttribute(attr)
+      if (a && /\d/.test(a)) chunks.push(a)
+    }
+    for (const attr of ['data-result', 'data-number', 'data-spin', 'data-value', 'data-ball']) {
+      const a = el.getAttribute(attr)
+      if (a && /^\d{1,2}$/.test(a.trim())) chunks.push(a.trim())
+    }
+    for (const c of el.childNodes) walk(c)
+  }
+  walk(rootEl)
+  return chunks.join(' ').replace(/\s+/g, ' ')
+}
+
+/** Longest run of tokens in 0..36 (space/comma separated) — typical “last spins” strip in UI text. */
+function longestConsecutiveRouletteRun(text: string): number[] {
+  const tokens = text.split(/[\s,|]+/).filter(Boolean)
+  let best: number[] = []
+  let cur: number[] = []
+  for (const tok of tokens) {
+    const n = Number.parseInt(tok.replace(/^[#:]+/, ''), 10)
+    if (Number.isInteger(n) && n >= 0 && n <= 36) {
+      cur.push(n)
+      const uniq = new Set(cur)
+      if (cur.length >= 4 && uniq.size <= 14 && cur.length > best.length) best = [...cur]
+    } else {
+      cur = []
+    }
+  }
+  return best.length >= 4 ? best : []
+}
+
+/** Nested Fresh launch: shell frames vs actual game (PartnerApi / ignition URLs). */
+function frameGameLikelihood(url: string): number {
+  const u = url.toLowerCase()
+  if (u.startsWith('about:')) return 0
+  if (u.includes('freshcheck') || u.includes('store.html')) return 2
+  if (u.includes('fresh.casino')) return 6
+  if (
+    /launch|partner|ignition|game_url|galaxsys|roulett|sslaunch|round-\d|\/game\//i.test(u)
+  )
+    return 14
+  return 5
+}
+
+/** Prefer snippets near history / results keywords (nested launcher frames). */
+function extractNearKeywords(full: string): string {
+  const windows: string[] = []
+  const lower = full.toLowerCase()
+  const keys = [
+    'истори',
+    'history',
+    'результат',
+    'result',
+    'recent',
+    'последн',
+    'previous',
+    'спин',
+    'spin',
+    'winning',
+    'выпало'
+  ]
+  for (const k of keys) {
+    let i = 0
+    while ((i = lower.indexOf(k, i)) !== -1) {
+      const start = Math.max(0, i - 40)
+      const end = Math.min(full.length, i + 220)
+      windows.push(full.slice(start, end))
+      i += k.length
+    }
+  }
+  return windows.join(' ')
+}
+
 /** Strongest signal = currency symbol / code near a plausible amount */
 function balanceCandidateScore(t: string): number {
   let s = 0
@@ -52,6 +157,7 @@ function balanceCandidateScore(t: string): number {
 type Snap = {
   historyText: string
   bodyText: string
+  scanText: string
   balanceText: string
   balanceSourceLine: string
   tableLabel: string | null
@@ -60,15 +166,54 @@ type Snap = {
   roundId: string | null
   /** Extra number sequences from history / results UI */
   extraNumberRuns: number[]
+  /** From deep text run heuristic */
+  deepStripNumbers: number[]
+  /** History modal column «10 Черный» — document order top = newest round */
+  gameColumnNumbers: number[]
+}
+
+function emptySnap(): Snap {
+  return {
+    historyText: '',
+    bodyText: '',
+    scanText: '',
+    balanceText: '',
+    balanceSourceLine: '',
+    tableLabel: null,
+    explicitResults: [],
+    stripNumbers: [],
+    roundId: null,
+    extraNumberRuns: [],
+    deepStripNumbers: [],
+    gameColumnNumbers: []
+  }
 }
 
 /**
  * Snapshot roulette-ish numbers from one document (main page or iframe).
+ * Never throws — otherwise Playwright drops the whole frame from merge → `no-data`.
  */
 function snapshotFromDocument(): Snap {
+  try {
+    return snapshotFromDocumentUnsafe()
+  } catch {
+    return emptySnap()
+  }
+}
+
+function snapshotFromDocumentUnsafe(): Snap {
   const text = (el: Element | null): string => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
-  const bodyText = (document.body?.innerText ?? '').replace(/\s+/g, ' ')
-  const all = Array.from(document.querySelectorAll('div, section, article, span, li, td, p, header, footer'))
+  const root = document.documentElement
+  if (!root || !document.body) return emptySnap()
+
+  const bodyText = (document.body.innerText ?? '').replace(/\s+/g, ' ')
+  const megaText = buildMegaText(document)
+  const keywordBlob = extractNearKeywords(`${megaText} ${bodyText}`)
+  const scanText = `${bodyText} ${megaText} ${keywordBlob}`.replace(/\s+/g, ' ')
+  const all = collectElementsDeep(root).filter((el) => {
+    const tag = el.tagName.toLowerCase()
+    return tag !== 'script' && tag !== 'style' && tag !== 'noscript'
+  })
 
   const clsId = (el: Element): string => {
     const c = (el as HTMLElement).className
@@ -116,7 +261,7 @@ function snapshotFromDocument(): Snap {
   ]
   for (const re of labelMoneyRes) {
     let m: RegExpExecArray | null
-    while ((m = re.exec(bodyText)) !== null) {
+    while ((m = re.exec(scanText)) !== null) {
       const fragment = m[0]!.trim()
       if (fragment.length > 3 && fragment.length < 100) {
         balanceLines.push({ t: fragment, score: balanceCandidateScore(fragment) + 2 })
@@ -127,13 +272,24 @@ function snapshotFromDocument(): Snap {
   if (balanceLines.length) balanceSourceLine = balanceLines[0]!.t
 
   const explicitResults: number[] = []
+  const gameColumnNumbers: number[] = []
+  const colorPairRe =
+    /\b(\d{1,2})\s+(Черный|Красный|Зеленый|Чёрный|Black|Red|Green)\b/gi
+  let cm: RegExpExecArray | null
+  while ((cm = colorPairRe.exec(scanText)) !== null) {
+    const n = Number.parseInt(cm[1]!, 10)
+    if (n >= 0 && n <= 36) gameColumnNumbers.push(n)
+  }
+
   for (const re of [
+    /(?:Результат\s*игры|Game\s*result)\s*[:\s]*(\d{1,2})\b/gi,
+    /(?:Результат|Result)\s*\([^)]*\)\s*[:\s]*(\d{1,2})\b/gi,
     /(?:Результат|Result)\s*[:\s]*(\d{1,2})\b/gi,
     /(?:Выпало|Winning|Winner|Выпал)\s*[:\s]*(\d{1,2})\b/gi,
     /(?:Last\s+number|Последний\s+номер)\s*[:\s]*(\d{1,2})\b/gi
   ]) {
     let m: RegExpExecArray | null
-    while ((m = re.exec(bodyText)) !== null) {
+    while ((m = re.exec(scanText)) !== null) {
       const n = Number.parseInt(m[1]!, 10)
       if (n >= 0 && n <= 36) explicitResults.push(n)
     }
@@ -148,12 +304,23 @@ function snapshotFromDocument(): Snap {
 
   let stripNumbers: number[] = []
   for (const re of stripPatterns) {
-    const stripMatch = bodyText.match(re)
+    const stripMatch = scanText.match(re)
     if (stripMatch?.[1]) {
       stripNumbers = parseRouletteInts(stripMatch[1])
       if (stripNumbers.length) break
     }
   }
+
+  const runKw = longestConsecutiveRouletteRun(keywordBlob)
+  const runWide = longestConsecutiveRouletteRun(scanText)
+  let deepStripNumbers: number[] = []
+  if (runKw.length >= 4) deepStripNumbers = runKw
+  else if (runWide.length >= 4 && new Set(runWide).size <= 14) deepStripNumbers = runWide
+
+  if (!stripNumbers.length && deepStripNumbers.length) stripNumbers = deepStripNumbers
+
+  /** Modal «История»: table lists newest round first — keep order, do not reverse later */
+  if (!stripNumbers.length && gameColumnNumbers.length >= 1) stripNumbers = [...gameColumnNumbers]
 
   /** Compact horizontal “last spins” rows (avoid full betting grid: too many distinct pockets). */
   const extraNumberRuns: number[] = []
@@ -173,20 +340,23 @@ function snapshotFromDocument(): Snap {
 
   let roundId: string | null = null
   const rid =
-    bodyText.match(/(?:ID\s*раунда|Round\s*(?:ID|id)?)\s*[:\s#]*(\d+)/iu) ??
-    bodyText.match(/(?:Ticket|Билет|Game\s*ID)\s*(?:ID|id)?\s*[:\s#]*(\d+)/iu)
+    scanText.match(/(?:ID\s*раунда|Round\s*(?:ID|id)?)\s*[:\s#]*(\d+)/iu) ??
+    scanText.match(/(?:Ticket|Билет|Game\s*ID)\s*(?:ID|id)?\s*[:\s#]*(\d+)/iu)
   if (rid?.[1]) roundId = rid[1]
 
   return {
     historyText,
     bodyText,
+    scanText,
     balanceText: balanceSourceLine,
     balanceSourceLine,
     tableLabel: (document.title || '').trim() || null,
     explicitResults,
     stripNumbers,
     roundId,
-    extraNumberRuns
+    extraNumberRuns,
+    deepStripNumbers,
+    gameColumnNumbers
   }
 }
 
@@ -200,18 +370,21 @@ function buildObservationFromSnap(snap: Snap): TableObservation {
     : []
   const explicit = snap.explicitResults
 
-  if (strip.length) {
+  if (snap.gameColumnNumbers.length >= 1) {
+    recent = mergeDedupeNewestFirst(snap.gameColumnNumbers, 16)
+  } else if (strip.length) {
     recent = mergeDedupeNewestFirst([...strip].reverse(), 16)
   } else if (fromExtras.length >= 4) {
     recent = mergeDedupeNewestFirst([...fromExtras].reverse(), 16)
   } else if (explicit.length) {
-    const last = explicit[explicit.length - 1]!
-    recent = mergeDedupeNewestFirst([last, ...fromHistory], 16)
+    /** Labeled «Результат» lines in modal: first match in reading order ≈ newest row */
+    const anchor = explicit[0]!
+    recent = mergeDedupeNewestFirst([anchor, ...fromHistory], 16)
   } else if (fromHistory.length) {
     recent = mergeDedupeNewestFirst(fromHistory, 16)
   }
 
-  const lower = snap.bodyText.toLowerCase()
+  const lower = snap.scanText.toLowerCase()
   let bettingOpen: boolean | null = null
   if (/(ставки закрыты|no more bets|bets closed)/i.test(lower)) bettingOpen = false
   if (/(делайте ставки|place your bets|bets open|ставки принимаются)/i.test(lower)) bettingOpen = true
@@ -223,6 +396,10 @@ function buildObservationFromSnap(snap: Snap): TableObservation {
     rawParts.push(`balanceLine:${snap.balanceSourceLine.slice(0, 120)}`)
   if (balance != null) rawParts.push(`balanceParsed:${balance}`)
   if (strip.length) rawParts.push(`strip:${strip.join(',')}`)
+  if (snap.gameColumnNumbers.length)
+    rawParts.push(`gameCol:${snap.gameColumnNumbers.slice(0, 20).join(',')}`)
+  if (snap.deepStripNumbers.length && strip.join(',') !== snap.deepStripNumbers.join(','))
+    rawParts.push(`deepStrip:${snap.deepStripNumbers.join(',')}`)
   if (fromExtras.length) rawParts.push(`runs:${mergeDedupeNewestFirst(fromExtras, 16).join(',')}`)
   if (explicit.length) rawParts.push(`result:${explicit.join(',')}`)
   if (fromHistory.length) rawParts.push(`hist:${fromHistory.join(',')}`)
@@ -239,23 +416,6 @@ function buildObservationFromSnap(snap: Snap): TableObservation {
   }
 }
 
-function mergeObservations(a: TableObservation, b: TableObservation): TableObservation {
-  const recent =
-    b.recentNumbers.length > a.recentNumbers.length ? b.recentNumbers : a.recentNumbers
-  const balance = a.balance ?? b.balance
-  const roundId = a.roundId ?? b.roundId
-  const rawNote = [a.rawNote, b.rawNote].filter(Boolean).join('||')
-  return {
-    recentNumbers: recent,
-    bettingOpen: a.bettingOpen ?? b.bettingOpen,
-    timerSeconds: null,
-    balance,
-    tableLabel: a.tableLabel ?? b.tableLabel,
-    roundId,
-    rawNote
-  }
-}
-
 /**
  * Best-effort observer for Fresh Casino / Galaxsys Roulette X.
  * Tries main document + same-origin iframes; merges balance from one frame with spins from another.
@@ -265,29 +425,152 @@ export class GalaxsysRouletteXObserver implements TableObserver {
 
   constructor(private readonly page: Page) {}
 
+  /** Longest block of 0–36 tokens in one element (recent-results strip above the felt). */
+  private async scrapeHorizontalStripFromFrame(frame: Frame): Promise<number[]> {
+    return frame
+      .evaluate(() => {
+        const tok = (text: string): number[] => {
+          const out: number[] = []
+          for (const part of text.split(/[^0-9]+/)) {
+            if (!part) continue
+            const n = Number.parseInt(part, 10)
+            if (n >= 0 && n <= 36) out.push(n)
+          }
+          return out
+        }
+        const visit = (el: Element, fn: (e: Element) => void): void => {
+          fn(el)
+          const sr = (el as HTMLElement).shadowRoot
+          if (sr) {
+            for (const c of sr.children) visit(c as Element, fn)
+          }
+          for (const c of el.children) visit(c as Element, fn)
+        }
+        let best: number[] = []
+        if (!document.documentElement) return []
+        visit(document.documentElement, (el) => {
+          const t = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+          if (t.length < 12 || t.length > 600) return
+          const nums = tok(t)
+          if (nums.length < 6) return
+          const uniq = new Set(nums)
+          if (uniq.size < 5 || uniq.size > 24) return
+          if (nums.length > best.length) best = nums
+        })
+        return best.slice(0, 28)
+      })
+      .catch(() => [])
+  }
+
+  /**
+   * When evaluate-in-frame misses (opaque iframe / transient errors), read visible text via Playwright selectors.
+   * Scans every frame: «10 Черный», horizontal number strips, balance «31 USD».
+   */
+  private async scrapeViaLocators(): Promise<{ recentNumbers: number[]; balance: number | null }> {
+    const colorRx =
+      /^\s*(\d{1,2})\s+(Черный|Красный|Зеленый|Чёрный|Black|Red|Green)\b/i
+
+    let bestStrip: number[] = []
+    const fromColors: number[] = []
+
+    const frames = this.page.frames().slice(0, 24)
+    for (const frame of frames) {
+      try {
+        const strip = await this.scrapeHorizontalStripFromFrame(frame)
+        if (strip.length > bestStrip.length) bestStrip = strip
+      } catch {
+        /* ignore */
+      }
+
+      try {
+        const loc = frame
+          .locator('td, [role="gridcell"], [role="cell"], div, span')
+          .filter({ hasText: colorRx })
+        const n = await loc.count()
+        const seen = new Set<string>()
+        for (let i = 0; i < Math.min(n, 64); i++) {
+          const txt = (await loc.nth(i).innerText().catch(() => '')).replace(/\s+/g, ' ').trim()
+          if (txt.length < 3 || seen.has(txt)) continue
+          seen.add(txt)
+          const m = txt.match(colorRx)
+          if (m) {
+            const v = Number.parseInt(m[1]!, 10)
+            if (v >= 0 && v <= 36) fromColors.push(v)
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    let recentNumbers: number[] = []
+    if (fromColors.length) {
+      recentNumbers = mergeDedupeNewestFirst(fromColors, 16)
+    } else if (bestStrip.length >= 4) {
+      recentNumbers = mergeDedupeNewestFirst(bestStrip, 16)
+    }
+
+    let balance: number | null = null
+    for (const frame of frames) {
+      try {
+        const balEl = frame
+          .getByText(/\b\d{1,8}(?:[.,]\d+)?\s*(USD|EUR|RUB|UAH|₽|\$|€|₴)\b/i)
+          .first()
+        const bt = await balEl.innerText({ timeout: 600 }).catch(() => '')
+        const p = parseFirstNumber(bt)
+        if (p != null) {
+          balance = p
+          break
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return {
+      recentNumbers,
+      balance
+    }
+  }
+
   async observe(): Promise<TableObservation> {
-    const collected: TableObservation[] = []
+    const collected: { obs: TableObservation; url: string }[] = []
 
     for (const frame of this.page.frames()) {
       try {
+        let url = ''
+        try {
+          url = frame.url()
+        } catch {
+          url = ''
+        }
         const snap = await frame.evaluate(snapshotFromDocument)
         const obs = buildObservationFromSnap(snap)
-        let frameHint = ''
-        try {
-          frameHint = frame.url().slice(0, 120)
-        } catch {
-          frameHint = 'unknown-frame'
-        }
         collected.push({
-          ...obs,
-          rawNote: `${obs.rawNote}|frame:${frameHint}`
+          obs: {
+            ...obs,
+            rawNote: `${obs.rawNote}|frame:${url.slice(0, 140)}`
+          },
+          url
         })
       } catch {
-        /* cross-origin iframe or detached */
+        /* cross-origin iframe or detached — Playwright cannot evaluate inside */
       }
     }
 
     if (!collected.length) {
+      const fb = await this.scrapeViaLocators()
+      if (fb.recentNumbers.length || fb.balance != null) {
+        return {
+          recentNumbers: fb.recentNumbers,
+          bettingOpen: null,
+          timerSeconds: null,
+          balance: fb.balance,
+          tableLabel: null,
+          roundId: null,
+          rawNote: `galaxsys-heuristic|locator-only|recent:${fb.recentNumbers.join(',')}|balance:${fb.balance ?? 'null'}`
+        }
+      }
       return {
         recentNumbers: [],
         bettingOpen: null,
@@ -299,25 +582,70 @@ export class GalaxsysRouletteXObserver implements TableObserver {
       }
     }
 
-    let merged = collected[0]!
-    for (let i = 1; i < collected.length; i++) {
-      merged = mergeObservations(merged, collected[i]!)
+    const ranked = [...collected].sort((a, b) => {
+      const diff = b.obs.recentNumbers.length - a.obs.recentNumbers.length
+      if (diff !== 0) return diff
+      return frameGameLikelihood(b.url) - frameGameLikelihood(a.url)
+    })
+
+    let recentNumbers = ranked[0]!.obs.recentNumbers
+    for (const { obs } of ranked) {
+      if (obs.recentNumbers.length > recentNumbers.length) recentNumbers = obs.recentNumbers
     }
 
-    /** Prefer the frame with the richest recent list as primary rawNote tail */
-    const richest = collected.reduce((best, cur) =>
-      cur.recentNumbers.length > best.recentNumbers.length ? cur : best
-    )
-    if (richest.recentNumbers.length > merged.recentNumbers.length) {
-      merged = { ...merged, recentNumbers: richest.recentNumbers }
+    let balance: number | null = null
+    for (const { obs } of ranked) {
+      if (obs.balance != null) {
+        balance = obs.balance
+        break
+      }
     }
 
-    const withBalance = collected.find((o) => o.balance != null)
-    if (withBalance) {
-      merged = { ...merged, balance: withBalance.balance, roundId: merged.roundId ?? withBalance.roundId }
+    /** Already sorted by spin count then launcher likelihood — first row is best shell when empty. */
+    const primary =
+      ranked.find((r) => r.obs.recentNumbers.length > 0) ?? ranked[0]!
+
+    let roundId: string | null = primary.obs.roundId ?? null
+    if (!roundId) {
+      for (const { obs } of ranked) {
+        if (obs.roundId != null) {
+          roundId = obs.roundId
+          break
+        }
+      }
     }
 
-    merged.rawNote = `${merged.rawNote}|frames:${collected.length}`
-    return merged
+    let bettingOpen: boolean | null = null
+    for (const { obs } of ranked) {
+      if (obs.bettingOpen !== null && obs.bettingOpen !== undefined) {
+        bettingOpen = obs.bettingOpen
+        break
+      }
+    }
+
+    let rawNote = `${primary.obs.rawNote}|frames:${collected.length}`
+
+    if (recentNumbers.length === 0 || balance == null) {
+      const fb = await this.scrapeViaLocators()
+      if (fb.recentNumbers.length > recentNumbers.length) {
+        recentNumbers = fb.recentNumbers
+      }
+      if (balance == null && fb.balance != null) {
+        balance = fb.balance
+      }
+      if (fb.recentNumbers.length || fb.balance != null) {
+        rawNote = `${rawNote}|locatorFallback`
+      }
+    }
+
+    return {
+      recentNumbers,
+      bettingOpen,
+      timerSeconds: null,
+      balance,
+      tableLabel: primary.obs.tableLabel,
+      roundId,
+      rawNote
+    }
   }
 }

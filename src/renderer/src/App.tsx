@@ -17,13 +17,62 @@ import type { MessageKey } from './i18n/messages'
 import { translate } from './i18n/messages'
 import {
   BUILTIN_STRATEGY_ENTRIES,
+  PRIMARY_VIP_STRATEGY_ID,
   getBuiltinStrategyConfigById
 } from '@modules/shared/builtin-strategies'
 import { I18nProvider, useI18n } from './i18n/context'
 import CasinoDashboard from './casino/CasinoDashboard'
+import AssistStandalone from './assist/AssistStandalone'
+import TeachingPage from './TeachingPage'
+import FeedTablesPage from './FeedTablesPage'
+import VipStrategyDocs from './vip/VipStrategyDocs'
 import { getApi } from './bridge'
 
-type Page = 'dashboard' | 'simple' | 'strategies' | 'simulator' | 'live' | 'logs' | 'settings'
+/** Timeline `at` is stored as Unix ms internally; shown as local date + hour:minute (no seconds). */
+function formatTimelineAt(ms: unknown, locale: AppLocale): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—'
+  const d = new Date(ms)
+  if (Number.isNaN(d.getTime())) return '—'
+  const tag = locale === 'ru' ? 'ru-RU' : 'en-GB'
+  return d.toLocaleString(tag, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+}
+
+function isAssistWindowRoute(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const q = new URLSearchParams(window.location.search)
+    if (q.get('assist') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  const h = window.location.hash.trim()
+  return /^#\/assist\b/.test(h) || /^#assist\b/.test(h)
+}
+
+export default function App(): React.ReactElement {
+  if (isAssistWindowRoute()) {
+    return <AssistStandalone />
+  }
+  return <MainApp />
+}
+
+type Page =
+  | 'dashboard'
+  | 'simple'
+  | 'strategies'
+  | 'feedTables'
+  | 'simulator'
+  | 'live'
+  | 'teach'
+  | 'logs'
+  | 'settings'
 
 const DEFAULT_SIMPLE_TABLE_URL = 'https://fresh.casino/table/galaxsys-roulettex'
 
@@ -60,12 +109,18 @@ const METRIC_LABELS: Partial<Record<string, MessageKey>> = {
   mode: 'metric_mode'
 }
 
-export default function App(): React.ReactElement {
+function MainApp(): React.ReactElement {
   const api = getApi()
   const [page, setPage] = useState<Page>('dashboard')
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [strategies, setStrategies] = useState<{ id: string; name: string; updatedAt: number }[]>([])
   const [error, setError] = useState<string | null>(null)
+
+  const strategiesForUi = useMemo(() => {
+    const vipOnly = strategies.filter((s) => s.id === PRIMARY_VIP_STRATEGY_ID)
+    if (vipOnly.length > 0) return vipOnly
+    return BUILTIN_STRATEGY_ENTRIES.map((b) => ({ id: b.id, name: b.name, updatedAt: 0 }))
+  }, [strategies])
 
   const refreshStrategies = useCallback(async () => {
     const list = await api.strategies.list()
@@ -129,7 +184,7 @@ export default function App(): React.ReactElement {
         setPage={setPage}
         settings={settings}
         setSettings={setSettings}
-        strategies={strategies}
+        strategies={strategiesForUi}
         error={error}
         api={api}
         refreshStrategies={refreshStrategies}
@@ -160,8 +215,10 @@ function AppChrome(props: {
     ['dashboard', 'navDashboard'],
     ['simple', 'navSimple'],
     ['strategies', 'navStrategies'],
+    ['feedTables', 'navFeedTables'],
     ['simulator', 'navSimulator'],
     ['live', 'navLive'],
+    ['teach', 'navTeach'],
     ['logs', 'navLogs'],
     ['settings', 'navSettings']
   ]
@@ -217,6 +274,13 @@ function AppChrome(props: {
           )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            className="rounded-md border border-gold/40 bg-surface px-2.5 py-1 text-xs font-medium text-gold hover:bg-gold/10"
+            onClick={() => void props.api.assist.open().catch(() => undefined)}
+          >
+            {t('navAssist')}
+          </button>
           <div className="flex items-center gap-1 rounded-md border border-border bg-surface px-1 py-0.5">
             <span className="px-1 text-xs text-slate-500">{t('langSwitch')}:</span>
             <button
@@ -246,9 +310,9 @@ function AppChrome(props: {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-row">
         <nav
-          className="w-56 shrink-0 border-r border-border/80 bg-elevated/90 p-3 backdrop-blur-sm"
+          className="w-52 shrink-0 border-r border-border/80 bg-elevated/90 p-3 backdrop-blur-sm"
           aria-label={t('navMain')}
         >
           {navItems.map(([id, key]) => (
@@ -267,43 +331,56 @@ function AppChrome(props: {
           ))}
         </nav>
 
-        <main className="min-w-0 flex-1 overflow-auto p-5">
-          {error && (
-            <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-danger dark:border-red-900 dark:bg-red-950">
-              {error}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface">
+          {/* Top strip: must match BrowserView bounds (see table-embed UPPER_EMBED_HEIGHT_RATIO ≈ flex 14/(14+11)) */}
+          <div className="relative flex min-h-0 flex-[14] flex-col border-b border-border/80 bg-gradient-to-br from-slate-950 via-slate-900 to-black">
+            <div className="pointer-events-none flex min-h-0 flex-1 flex-col items-center justify-center p-4 text-center">
+              <p className="max-w-md text-xs leading-relaxed text-slate-500">{t('embedTableHint')}</p>
             </div>
-          )}
-          {page === 'dashboard' && <CasinoDashboard strategies={strategies} />}
-          {page === 'simple' && (
-            <SimpleLaunchPage
-              api={api}
-              strategies={strategies}
-              settings={settings}
-              setSettings={setSettings}
-            />
-          )}
-          {page === 'strategies' && (
-            <StrategiesPage
-              api={api}
-              strategies={strategies}
-              onRefresh={() => void refreshStrategies()}
-            />
-          )}
-          {page === 'simulator' && (
-            <SimulatorPage api={api} strategies={strategies} metricLabels={METRIC_LABELS} />
-          )}
-          {page === 'live' && <LivePage api={api} strategies={strategies} settings={settings} />}
-          {page === 'logs' && <LogsPage api={api} />}
-          {page === 'settings' && (
-            <SettingsPage
-              settings={settings}
-              onChange={async (partial) => {
-                const next = await api.settings.set(partial)
-                setSettings(next)
-              }}
-            />
-          )}
-        </main>
+          </div>
+
+          <main className="min-h-0 flex-[11] overflow-auto p-5">
+            {error && (
+              <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-danger dark:border-red-900 dark:bg-red-950">
+                {error}
+              </div>
+            )}
+            {page === 'dashboard' && <CasinoDashboard strategies={strategies} />}
+            {page === 'simple' && (
+              <SimpleLaunchPage
+                api={api}
+                strategies={strategies}
+                settings={settings}
+                setSettings={setSettings}
+              />
+            )}
+            {page === 'strategies' && (
+              <StrategiesPage
+                api={api}
+                strategies={strategies}
+                onRefresh={() => void refreshStrategies()}
+              />
+            )}
+            {page === 'feedTables' && <FeedTablesPage api={api} />}
+            {page === 'simulator' && (
+              <SimulatorPage api={api} strategies={strategies} metricLabels={METRIC_LABELS} />
+            )}
+            {page === 'live' && (
+              <LivePage api={api} strategies={strategies} settings={settings} setSettings={setSettings} />
+            )}
+            {page === 'teach' && <TeachingPage api={api} />}
+            {page === 'logs' && <LogsPage api={api} />}
+            {page === 'settings' && (
+              <SettingsPage
+                settings={settings}
+                onChange={async (partial) => {
+                  const next = await api.settings.set(partial)
+                  setSettings(next)
+                }}
+              />
+            )}
+          </main>
+        </div>
       </div>
     </div>
   )
@@ -315,17 +392,19 @@ function SimpleLaunchPage(props: {
   settings: AppSettings
   setSettings: (s: AppSettings) => void
 }): React.ReactElement {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [strategyId, setStrategyId] = useState('')
   const [url, setUrl] = useState(DEFAULT_SIMPLE_TABLE_URL)
   const [bankroll, setBankroll] = useState('1000')
   const [takeProfit, setTakeProfit] = useState('')
   const [maxLoss, setMaxLoss] = useState('')
   const [observeOnly, setObserveOnly] = useState(false)
+  const [manualLastSpin, setManualLastSpin] = useState('')
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<unknown[]>([])
   const [pending, setPending] = useState<unknown>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [teachingMappingKey, setTeachingMappingKey] = useState('')
 
   useEffect(() => {
     const off = props.api.onTimeline((ev) => {
@@ -333,6 +412,12 @@ function SimpleLaunchPage(props: {
     })
     return off
   }, [props.api])
+
+  useEffect(() => {
+    if (props.strategies.length === 1 && strategyId === '') {
+      setStrategyId(props.strategies[0]!.id)
+    }
+  }, [props.strategies, strategyId])
 
   const refreshStatus = async () => {
     const s = await props.api.session.status()
@@ -342,7 +427,7 @@ function SimpleLaunchPage(props: {
 
   const onStart = async (): Promise<void> => {
     setSessionError(null)
-    if (!strategyId.trim()) {
+    if (!observeOnly && !strategyId.trim()) {
       setSessionError(t('liveStrategyRequired'))
       return
     }
@@ -362,6 +447,16 @@ function SimpleLaunchPage(props: {
     if (mlRaw && (!Number.isFinite(ml) || (ml ?? 0) <= 0)) {
       setSessionError(t('liveBankrollInvalid'))
       return
+    }
+    const msRaw = manualLastSpin.trim()
+    let manualSpinOpt: number | undefined
+    if (msRaw !== '') {
+      const mn = Number.parseInt(msRaw, 10)
+      if (!Number.isInteger(mn) || mn < 0 || mn > 36) {
+        setSessionError(t('manualSpinInvalid'))
+        return
+      }
+      manualSpinOpt = mn
     }
     try {
       if (observeOnly) {
@@ -383,12 +478,14 @@ function SimpleLaunchPage(props: {
     setTimeline([])
     try {
       await props.api.session.start({
-        mode: observeOnly ? 'dry-run' : 'confirmed-action',
-        strategyId: strategyId.trim(),
+        mode: observeOnly ? 'observer' : 'confirmed-action',
+        ...(strategyId.trim() ? { strategyId: strategyId.trim() } : {}),
         initialBankroll: br,
         startUrl: url.trim() ? url.trim() : undefined,
         ...(tp != null && Number.isFinite(tp) && tp > 0 ? { takeProfit: tp } : {}),
-        ...(ml != null && Number.isFinite(ml) && ml > 0 ? { maxLoss: ml } : {})
+        ...(ml != null && Number.isFinite(ml) && ml > 0 ? { maxLoss: ml } : {}),
+        ...(manualSpinOpt !== undefined ? { manualLastSpin: manualSpinOpt } : {}),
+        ...(teachingMappingKey.trim() ? { teachingMappingKey: teachingMappingKey.trim() } : {})
       })
       await refreshStatus()
     } catch (e) {
@@ -434,6 +531,15 @@ function SimpleLaunchPage(props: {
           />
         </label>
         <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('sessionMappingKey')}</span>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm font-mono"
+            value={teachingMappingKey}
+            onChange={(e) => void setTeachingMappingKey(e.target.value)}
+            placeholder={t('sessionMappingKeyPh')}
+          />
+        </label>
+        <label className="block text-sm">
           <span className="text-xs uppercase text-slate-500">{t('simpleBankroll')}</span>
           <input
             className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
@@ -457,6 +563,16 @@ function SimpleLaunchPage(props: {
             placeholder={t('simpleMaxLossPh')}
             value={maxLoss}
             onChange={(e) => void setMaxLoss(e.target.value)}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-xs uppercase text-slate-500">{t('simpleManualLastSpin')}</span>
+          <input
+            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
+            inputMode="numeric"
+            placeholder={t('simpleManualLastSpinPh')}
+            value={manualLastSpin}
+            onChange={(e) => void setManualLastSpin(e.target.value)}
           />
         </label>
         <label className="flex cursor-pointer items-center gap-2 text-sm">
@@ -552,7 +668,7 @@ function SimpleLaunchPage(props: {
                 const r = row as { at?: number; kind?: string; payload?: unknown }
                 return (
                   <tr key={i} className="border-t border-border">
-                    <td className="p-2 font-mono">{r.at}</td>
+                    <td className="p-2 font-mono text-[11px]">{formatTimelineAt(r.at, locale)}</td>
                     <td className="p-2">{r.kind}</td>
                     <td className="p-2 font-mono">{JSON.stringify(r.payload)}</td>
                   </tr>
@@ -580,10 +696,35 @@ function StrategiesPage(props: {
       ? props.strategies
       : BUILTIN_STRATEGY_ENTRIES.map((b) => ({ id: b.id, name: b.name }))
 
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const fromDb = await props.api.strategies.get(PRIMARY_VIP_STRATEGY_ID)
+        const cfg = fromDb ?? getBuiltinStrategyConfigById(PRIMARY_VIP_STRATEGY_ID)
+        if (cfg != null && !cancelled) {
+          setJson(JSON.stringify(cfg, null, 2))
+        }
+      } catch {
+        const builtin = getBuiltinStrategyConfigById(PRIMARY_VIP_STRATEGY_ID)
+        if (builtin != null && !cancelled) {
+          setJson(JSON.stringify(builtin, null, 2))
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [props.api])
+
   return (
     <div>
       <h1 className="text-xl font-semibold">{t('stratTitle')}</h1>
       <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{t('stratIntro')}</p>
+      <p className="mt-2 rounded-md border border-border/80 bg-surface/60 px-3 py-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+        {t('stratSectionExplain')}
+      </p>
+      <VipStrategyDocs />
       <div className="mt-4 flex flex-wrap gap-2">
         {presetList.map((s) => (
           <button
@@ -702,6 +843,12 @@ function SimulatorPage(props: {
   const [curve, setCurve] = useState<number[]>([])
   const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null)
   const [histSpins, setHistSpins] = useState<number[]>([])
+
+  useEffect(() => {
+    if (props.strategies.length === 1 && strategyId === '') {
+      setStrategyId(props.strategies[0]!.id)
+    }
+  }, [props.strategies, strategyId])
 
   const chartData = useMemo(() => {
     const dd = drawdownSeries(curve)
@@ -877,16 +1024,19 @@ function LivePage(props: {
   api: ReturnType<typeof getApi>
   strategies: { id: string; name: string }[]
   settings: AppSettings
+  setSettings: (s: AppSettings) => void
 }): React.ReactElement {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [mode, setMode] = useState<AppMode>('dry-run')
   const [strategyId, setStrategyId] = useState('')
   const [url, setUrl] = useState('')
   const [bankroll, setBankroll] = useState('1000')
+  const [manualLastSpin, setManualLastSpin] = useState('')
   const [timeline, setTimeline] = useState<unknown[]>([])
   const [pending, setPending] = useState<unknown>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionError, setSessionError] = useState<string | null>(null)
+  const [teachingMappingKey, setTeachingMappingKey] = useState('')
 
   useEffect(() => {
     const off = props.api.onTimeline((ev) => {
@@ -895,10 +1045,27 @@ function LivePage(props: {
     return off
   }, [props.api])
 
+  useEffect(() => {
+    if (props.strategies.length === 1 && strategyId === '') {
+      setStrategyId(props.strategies[0]!.id)
+    }
+  }, [props.strategies, strategyId])
+
   const refreshStatus = async () => {
     const s = await props.api.session.status()
     setPending(s.pending)
     setSessionId(s.sessionId)
+  }
+
+  const parseOptionalManualSpin = (): number | undefined => {
+    const msRaw = manualLastSpin.trim()
+    if (msRaw === '') return undefined
+    const mn = Number.parseInt(msRaw, 10)
+    if (!Number.isInteger(mn) || mn < 0 || mn > 36) {
+      setSessionError(t('manualSpinInvalid'))
+      return undefined
+    }
+    return mn
   }
 
   return (
@@ -912,7 +1079,19 @@ function LivePage(props: {
           {sessionError}
         </div>
       )}
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <button
+          type="button"
+          onClick={() => setMode('observer')}
+          className={`rounded-xl border-2 p-4 text-left transition-all ${
+            mode === 'observer'
+              ? 'border-sky-500/80 bg-sky-950/30 ring-1 ring-sky-500/40'
+              : 'border-border/60 bg-elevated/60 hover:border-sky-500/30'
+          }`}
+        >
+          <div className="font-display text-lg font-semibold text-sky-400">{t('presetObserver')}</div>
+          <div className="mt-1 text-xs text-slate-400">{t('presetObserverSub')}</div>
+        </button>
         <button
           type="button"
           onClick={() => setMode('suggestion')}
@@ -950,6 +1129,9 @@ function LivePage(props: {
           <div className="mt-1 text-xs text-slate-400">{t('presetHedgeSub')}</div>
         </button>
       </div>
+      {mode === 'observer' && (
+        <p className="text-sm text-sky-700 dark:text-sky-300">{t('liveObserverHint')}</p>
+      )}
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border/60 bg-elevated/50 px-4 py-2 text-sm">
         <span className="text-slate-400">{t('autoBet')}</span>
         <span
@@ -967,6 +1149,7 @@ function LivePage(props: {
           value={mode}
           onChange={(e) => setMode(e.target.value as AppMode)}
         >
+          <option value="observer">{t('modeOptObserver')}</option>
           <option value="dry-run">{t('modeOptDryRun')}</option>
           <option value="suggestion">{t('modeOptSuggestion')}</option>
           <option value="confirmed-action">{t('modeOptConfirmed')}</option>
@@ -991,16 +1174,31 @@ function LivePage(props: {
           onChange={(e) => setUrl(e.target.value)}
         />
         <input
+          className="min-w-[140px] flex-1 rounded border border-border bg-elevated px-2 py-2 font-mono text-sm"
+          placeholder={t('sessionMappingKeyPh')}
+          title={t('sessionMappingKey')}
+          value={teachingMappingKey}
+          onChange={(e) => setTeachingMappingKey(e.target.value)}
+        />
+        <input
           className="w-28 rounded border border-border bg-elevated px-2 py-2 text-sm"
           value={bankroll}
           onChange={(e) => setBankroll(e.target.value)}
+        />
+        <input
+          className="w-20 rounded border border-border bg-elevated px-2 py-2 text-sm"
+          inputMode="numeric"
+          placeholder={t('simpleManualLastSpinPh')}
+          title={t('simpleManualLastSpin')}
+          value={manualLastSpin}
+          onChange={(e) => setManualLastSpin(e.target.value)}
         />
         <button
           type="button"
           className="rounded bg-accent px-3 py-2 text-sm text-white"
           onClick={async () => {
             setSessionError(null)
-            if (!strategyId.trim()) {
+            if (mode !== 'observer' && !strategyId.trim()) {
               setSessionError(t('liveStrategyRequired'))
               return
             }
@@ -1009,13 +1207,21 @@ function LivePage(props: {
               setSessionError(t('liveBankrollInvalid'))
               return
             }
+            const manualOpt = parseOptionalManualSpin()
+            if (manualOpt === undefined && manualLastSpin.trim() !== '') return
             setTimeline([])
             try {
+              if (mode === 'observer') {
+                const next = await props.api.settings.set({ dryRunOnly: true })
+                props.setSettings(next)
+              }
               await props.api.session.start({
                 mode,
-                strategyId: strategyId.trim(),
+                ...(strategyId.trim() ? { strategyId: strategyId.trim() } : {}),
                 initialBankroll: br,
-                startUrl: url.trim() ? url.trim() : undefined
+                startUrl: url.trim() ? url.trim() : undefined,
+                ...(manualOpt !== undefined ? { manualLastSpin: manualOpt } : {}),
+                ...(teachingMappingKey.trim() ? { teachingMappingKey: teachingMappingKey.trim() } : {})
               })
               await refreshStatus()
             } catch (e) {
@@ -1101,7 +1307,7 @@ function LivePage(props: {
                 const r = row as { at?: number; kind?: string; payload?: unknown }
                 return (
                   <tr key={i} className="border-t border-border">
-                    <td className="p-2 font-mono">{r.at}</td>
+                    <td className="p-2 font-mono text-[11px]">{formatTimelineAt(r.at, locale)}</td>
                     <td className="p-2">{r.kind}</td>
                     <td className="p-2 font-mono">{JSON.stringify(r.payload)}</td>
                   </tr>

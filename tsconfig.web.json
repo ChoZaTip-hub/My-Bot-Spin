@@ -23,6 +23,11 @@
     },
     "types": ["vite/client"]
   },
-  "include": ["src/renderer/src/**/*", "src/renderer/index.html", "src/modules/shared/**/*"],
+  "include": [
+    "src/renderer/src/**/*",
+    "src/renderer/index.html",
+    "src/modules/shared/**/*",
+    "src/modules/vip-five/**/*"
+  ],
   "exclude": ["node_modules", "out", "release"]
 }

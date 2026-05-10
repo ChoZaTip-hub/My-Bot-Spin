@@ -112,6 +112,15 @@ export const errorEvents = sqliteTable(
   (t) => [index('error_events_session_idx').on(t.sessionId)]
 )
 
+/** User-defined European 0–36 → five straight numbers for VIP-five feed. */
+export const feedTables = sqliteTable('feed_tables', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  mappingJson: text('mapping_json').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
+})
+
 export const screenshots = sqliteTable(
   'screenshots',
   {

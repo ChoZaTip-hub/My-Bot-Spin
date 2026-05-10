@@ -24,5 +24,18 @@ export const IPC_CHANNELS = {
   importSpinsCsv: 'import:spins-csv',
   exportResultsCsv: 'export:results-csv',
   dialogPickFile: 'dialog:pick-file',
-  analyticsOverview: 'analytics:overview'
+  analyticsOverview: 'analytics:overview',
+  teachingStart: 'teaching:start',
+  teachingStop: 'teaching:stop',
+  teachingEvents: 'teaching:events',
+  teachingClear: 'teaching:clear',
+  teachingSave: 'teaching:save',
+  teachingStatus: 'teaching:status',
+  teachingSaveMapping: 'teaching:save-mapping',
+  assistOpen: 'assist:open',
+  assistGetState: 'assist:get-state',
+  feedTablesList: 'feed-tables:list',
+  feedTablesGet: 'feed-tables:get',
+  feedTablesSave: 'feed-tables:save',
+  feedTablesDelete: 'feed-tables:delete'
 } as const

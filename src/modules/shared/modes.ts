@@ -1,6 +1,12 @@
 import { z } from 'zod'
 
-export const AppModeSchema = z.enum(['simulation', 'dry-run', 'suggestion', 'confirmed-action'])
+export const AppModeSchema = z.enum([
+  'simulation',
+  'dry-run',
+  'suggestion',
+  'confirmed-action',
+  'observer'
+])
 
 export type AppMode = z.infer<typeof AppModeSchema>
 

@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS screenshots (
   created_at integer NOT NULL
 );
 CREATE INDEX IF NOT EXISTS screenshots_session_idx ON screenshots (session_id);
+CREATE TABLE IF NOT EXISTS feed_tables (
+  id text PRIMARY KEY NOT NULL,
+  name text NOT NULL,
+  mapping_json text NOT NULL,
+  created_at integer NOT NULL,
+  updated_at integer NOT NULL
+);
 `
 
 export function bootstrapSqliteSchema(sqlite: Database.Database): void {

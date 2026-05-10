@@ -1,6 +1,10 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { RSA_CDP_PORT } from './cdp-config'
 import { createLogger, forwardLogsToRenderer } from './logger'
+
+/** Lets Playwright attach to the same Electron process (embedded BrowserView). */
+app.commandLine.appendSwitch('remote-debugging-port', RSA_CDP_PORT)
 
 let mainWindow: BrowserWindow | null = null
 
@@ -59,21 +63,34 @@ if (!gotTheLock) {
     })
     await seedIfEmpty(db, baseLogger.child('seed'))
 
-    const browserHost = new BrowserHost(baseLogger.child('playwright'), userData)
+    const { TableEmbedManager } = await import('./table-embed')
+    const tableEmbed = new TableEmbedManager(baseLogger.child('embed'))
+    const browserHost = new BrowserHost(baseLogger.child('playwright'), userData, {
+      getMainWindow: (): BrowserWindow | null => mainWindow,
+      tableEmbed,
+      useEmbeddedTable: process.env.RSA_EMBEDDED_TABLE !== '0'
+    })
     const getWindow = (): BrowserWindow | null => mainWindow
     const live = new LiveSessionController(db, baseLogger.child('session'), browserHost, getWindow)
 
+    const { TeachingRecorder } = await import('./teaching/TeachingRecorder')
+    const teaching = new TeachingRecorder(browserHost, baseLogger.child('teaching'), userData, getWindow)
+
     mainWindow = createMainWindow()
+    tableEmbed.attach(mainWindow)
     const logger = forwardLogsToRenderer(mainWindow, baseLogger)
-    registerIpc({ db, logger, browserHost, live, ipcMain, dialog })
+    registerIpc({ db, logger, browserHost, live, teaching, ipcMain, dialog, userDataDir: userData })
 
     mainWindow.on('closed', () => {
+      const w = mainWindow
       mainWindow = null
+      if (w) tableEmbed.destroy(w)
     })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         mainWindow = createMainWindow()
+        tableEmbed.attach(mainWindow)
       }
     })
   })

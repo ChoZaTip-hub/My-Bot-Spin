@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Dialog, IpcMain } from 'electron'
-import { desc, eq } from 'drizzle-orm'
+import { count, desc, eq } from 'drizzle-orm'
 import type { DbClient } from '@modules/db/client'
 import * as schema from '@modules/db/schema'
+import { OBSERVER_STRATEGY } from '@modules/shared/observer-strategy'
 import { StrategyConfigSchema } from '@modules/shared/strategy-config'
 import { IPC_CHANNELS } from '@modules/shared/ipc-channels'
 import {
+  FeedTableSaveRequestSchema,
   SessionConfirmPayloadSchema,
   SessionStartRequestSchema,
   SettingsSchema,
@@ -14,14 +16,16 @@ import {
   SimulationRunRequestSchema,
   type AppSettings
 } from '@modules/shared/ipc-contract'
+import { BUILTIN_VIP_FEED_TABLE_ID, parseFeedTableMappingJson } from '@modules/shared/feed-table-mapping'
 import { parseSpinCsv } from '@modules/simulator/csv'
-import { MockTableExecutor } from '@modules/executor/mockExecutor'
 import { MockTableObserver } from '@modules/parser/mockObserver'
 import { summarizeSpinAnalytics } from '@modules/shared/sector-analytics'
 import type { Logger } from '../logger'
 import type { BrowserHost } from '../playwright/BrowserHost'
+import type { TeachingRecorder } from '../teaching/TeachingRecorder'
+import { createAssistWindow } from '../assist-window'
 import { GenericDomObserver } from '../playwright/GenericDomObserver'
-import { GalaxsysRouletteXExecutor } from '../playwright/GalaxsysRouletteXExecutor'
+import { createTableExecutor } from '../playwright/create-table-executor'
 import { GalaxsysRouletteXObserver } from '../playwright/GalaxsysRouletteXObserver'
 import { LiveSessionController } from '../session/LiveSessionController'
 import type { RiskLimits } from '@modules/risk-manager/types'
@@ -64,10 +68,12 @@ export function registerIpc(deps: {
   logger: Logger
   browserHost: BrowserHost
   live: LiveSessionController
+  teaching: TeachingRecorder
   ipcMain: IpcMain
   dialog: Dialog
+  userDataDir: string
 }): void {
-  const { db, logger, browserHost, live, ipcMain, dialog } = deps
+  const { db, logger, browserHost, live, teaching, ipcMain, dialog, userDataDir } = deps
 
   ipcMain.handle(IPC_CHANNELS.settingsGet, async () => readSettings(db))
   ipcMain.handle(IPC_CHANNELS.settingsSet, async (_e, partial: unknown) => {
@@ -254,6 +260,30 @@ export function registerIpc(deps: {
     return { ok: true as const }
   })
 
+  ipcMain.handle(IPC_CHANNELS.teachingStart, async () => teaching.start())
+  ipcMain.handle(IPC_CHANNELS.teachingStop, async () => teaching.stop())
+  ipcMain.handle(IPC_CHANNELS.teachingEvents, async () => teaching.getEvents())
+  ipcMain.handle(IPC_CHANNELS.teachingClear, async () => {
+    teaching.clearBuffer()
+    return { ok: true as const }
+  })
+  ipcMain.handle(IPC_CHANNELS.teachingSave, async (_e, filename?: string) => ({
+    path: teaching.saveSessionToDisk(typeof filename === 'string' ? filename : undefined)
+  }))
+  ipcMain.handle(IPC_CHANNELS.teachingStatus, async () => ({
+    recording: teaching.isRecording(),
+    eventCount: teaching.getEvents().length
+  }))
+  ipcMain.handle(IPC_CHANNELS.teachingSaveMapping, async (_e, key: unknown) =>
+    teaching.saveInferredMappingProfile(typeof key === 'string' ? key : '')
+  )
+
+  ipcMain.handle(IPC_CHANNELS.assistOpen, async () => {
+    createAssistWindow()
+    return { ok: true as const }
+  })
+  ipcMain.handle(IPC_CHANNELS.assistGetState, async () => live.getAssistSnapshot())
+
   ipcMain.handle(IPC_CHANNELS.sessionStart, async (_e, req: unknown) => {
     const parsed = SessionStartRequestSchema.parse(req)
     const settings = await readSettings(db)
@@ -271,6 +301,9 @@ export function registerIpc(deps: {
         .limit(1)
       if (!v.length) throw new Error('Strategy not found')
       strategy = StrategyConfigSchema.parse(JSON.parse(v[0]!.configJson))
+    }
+    if (!strategy && parsed.mode === 'observer') {
+      strategy = OBSERVER_STRATEGY
     }
     if (!strategy) throw new Error('strategyConfig or strategyId required')
 
@@ -295,9 +328,10 @@ export function registerIpc(deps: {
               rawNote: 'synthetic-wheel'
             }
           })
-    const executor = page && parsed.startUrl && isGalaxsysRouletteXUrl(parsed.startUrl)
-      ? new GalaxsysRouletteXExecutor(page)
-      : new MockTableExecutor()
+    const teachingKey = parsed.teachingMappingKey?.trim()
+    const startUrlForExec =
+      parsed.startUrl?.trim() ?? (typeof page?.url() === 'string' ? page!.url() : undefined)
+    const executor = createTableExecutor(page, startUrlForExec, userDataDir, teachingKey ?? null)
     const riskLimits: RiskLimits = {
       stopLoss: parsed.maxLoss ?? 1_000_000,
       stopWin: parsed.takeProfit ?? Math.max(1, Math.floor(parsed.initialBankroll * 0.5)),
@@ -313,7 +347,9 @@ export function registerIpc(deps: {
       initialBankroll: parsed.initialBankroll,
       observer,
       executor,
-      riskLimits
+      riskLimits,
+      manualLastSpin: parsed.manualLastSpin,
+      teachingMappingKey: teachingKey
     })
     logger.log('info', 'Session started', { sessionId, mode: parsed.mode })
     return { sessionId }
@@ -342,7 +378,12 @@ export function registerIpc(deps: {
     const settings = await readSettings(db)
     const page = browserHost.getPage()
     const currentUrl = page?.url()
-    const executor = page && isGalaxsysRouletteXUrl(currentUrl) ? new GalaxsysRouletteXExecutor(page) : new MockTableExecutor()
+    const executor = createTableExecutor(
+      page ?? null,
+      typeof currentUrl === 'string' ? currentUrl : undefined,
+      userDataDir,
+      live.getTeachingMappingKey()
+    )
     await live.confirmPending(p.accept, executor, settings)
     return { ok: true as const }
   })
@@ -357,16 +398,100 @@ export function registerIpc(deps: {
   })
 
   ipcMain.handle(IPC_CHANNELS.analyticsOverview, async () => {
-    const rows = await db
-      .select()
+    const [totalRow] = await db.select({ c: count() }).from(schema.spins)
+    const spinTotal = Number(totalRow?.c ?? 0)
+
+    const [obsRow] = await db
+      .select({ c: count() })
+      .from(schema.spins)
+      .innerJoin(schema.sessions, eq(schema.spins.sessionId, schema.sessions.id))
+      .where(eq(schema.sessions.mode, 'observer'))
+    const observerSpinTotal = Number(obsRow?.c ?? 0)
+
+    if (spinTotal === 0) {
+      return {
+        summary: summarizeSpinAnalytics([]),
+        recentSpinsDesc: [] as number[],
+        spinTotal: 0,
+        observerSpinTotal: 0
+      }
+    }
+
+    const summaryCap = Math.min(spinTotal, 15_000)
+    const summaryRows = await db
+      .select({ value: schema.spins.value })
       .from(schema.spins)
       .orderBy(desc(schema.spins.observedAt))
-      .limit(500)
-    const chronological = [...rows].reverse()
+      .limit(summaryCap)
+    const chronological = [...summaryRows].reverse()
     const spins = chronological.map((r) => r.value)
     const summary = summarizeSpinAnalytics(spins)
-    const recentSpinsDesc = rows.slice(0, 36).map((r) => r.value)
-    return { summary, recentSpinsDesc, spinTotal: spins.length }
+
+    const recentRows = await db
+      .select({ value: schema.spins.value })
+      .from(schema.spins)
+      .orderBy(desc(schema.spins.observedAt))
+      .limit(36)
+    const recentSpinsDesc = recentRows.map((r) => r.value)
+
+    return { summary, recentSpinsDesc, spinTotal, observerSpinTotal }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.feedTablesList, async () => {
+    const rows = await db.select().from(schema.feedTables).orderBy(desc(schema.feedTables.updatedAt))
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      updatedAt: r.updatedAt.getTime()
+    }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.feedTablesGet, async (_e, id: unknown) => {
+    const sid = typeof id === 'string' ? id : ''
+    if (!sid) return null
+    const rows = await db.select().from(schema.feedTables).where(eq(schema.feedTables.id, sid)).limit(1)
+    if (!rows.length) return null
+    const r = rows[0]!
+    return { id: r.id, name: r.name, mappingJson: r.mappingJson }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.feedTablesSave, async (_e, payload: unknown) => {
+    const p = FeedTableSaveRequestSchema.parse(payload)
+    let parsedJson: unknown
+    try {
+      parsedJson = JSON.parse(p.mappingJson)
+    } catch {
+      throw new Error('mappingJson must be valid JSON')
+    }
+    parseFeedTableMappingJson(parsedJson)
+    const ts = new Date()
+    const id = p.id?.trim() ? p.id.trim() : randomUUID()
+    const existing = await db.select().from(schema.feedTables).where(eq(schema.feedTables.id, id)).limit(1)
+    if (existing.length) {
+      await db
+        .update(schema.feedTables)
+        .set({ name: p.name.trim(), mappingJson: p.mappingJson.trim(), updatedAt: ts })
+        .where(eq(schema.feedTables.id, id))
+    } else {
+      await db.insert(schema.feedTables).values({
+        id,
+        name: p.name.trim(),
+        mappingJson: p.mappingJson.trim(),
+        createdAt: ts,
+        updatedAt: ts
+      })
+    }
+    return { id }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.feedTablesDelete, async (_e, id: unknown) => {
+    const sid = typeof id === 'string' ? id.trim() : ''
+    if (!sid) return { ok: false as const }
+    if (sid === BUILTIN_VIP_FEED_TABLE_ID) {
+      throw new Error('Cannot delete the built-in VIP feed table')
+    }
+    await db.delete(schema.feedTables).where(eq(schema.feedTables.id, sid))
+    return { ok: true as const }
   })
 
   ipcMain.handle(IPC_CHANNELS.logsQuery, async (_e, filter: { level?: string; limit?: number }) => {

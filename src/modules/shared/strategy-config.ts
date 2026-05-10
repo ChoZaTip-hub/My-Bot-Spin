@@ -1,6 +1,31 @@
 import { z } from 'zod'
 import { BetTypeSchema } from './decision'
 
+/** How VIP-five picks the 0–36 → five numbers grid for the next bet. */
+export const VipFeedSelectionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('builtin') }),
+  z.object({ kind: z.literal('fixed'), tableId: z.string().min(1) }),
+  z.object({
+    kind: z.literal('dominant_sector'),
+    voisinsTableId: z.string().min(1),
+    tiersTableId: z.string().min(1),
+    orphelinsTableId: z.string().min(1),
+    /** Before this many wheel outcomes in the session, use built-in grid (cold start). Default 18. */
+    minSpinsBeforeSwitch: z.number().int().min(5).max(500).optional()
+  })
+])
+
+export type VipFeedSelection = z.infer<typeof VipFeedSelectionSchema>
+
+/** Soft advisory notes in timeline (descriptive — does not auto-stop). */
+export const VipStopHintsSchema = z.object({
+  warnDominantSectorPctGte: z.number().min(0.35).max(1).optional(),
+  minSpinsForDominantWarn: z.number().int().min(10).max(500).optional(),
+  warnConsecutiveRoundLossesGte: z.number().int().min(2).max(50).optional()
+})
+
+export type VipStopHints = z.infer<typeof VipStopHintsSchema>
+
 export const ProgressionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('flat'),
@@ -12,13 +37,13 @@ export const ProgressionSchema = z.discriminatedUnion('type', [
     /** Stake multipliers per loss step; resets on win if resetOnWin */
     multipliers: z.array(z.number().positive()).min(1)
   }),
-  z
-    .object({
-      type: z.literal('vip_five'),
-      /** Exactly five distinct pocket numbers (European 0–36); uniqueness enforced on StrategyConfigSchema */
-      numbers: z.array(z.number().int().min(0).max(36)).length(5)
-    })
-    .strict()
+  z.object({
+    type: z.literal('vip_five'),
+    /** Exactly five distinct pocket numbers (European 0–36); uniqueness enforced on StrategyConfigSchema */
+    numbers: z.array(z.number().int().min(0).max(36)).length(5),
+    feedSelection: VipFeedSelectionSchema.optional(),
+    stopHints: VipStopHintsSchema.optional()
+  })
 ])
 
 export type ProgressionConfig = z.infer<typeof ProgressionSchema>

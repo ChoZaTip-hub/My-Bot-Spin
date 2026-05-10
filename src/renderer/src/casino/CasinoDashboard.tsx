@@ -22,6 +22,7 @@ export default function CasinoDashboard(props: {
   const [summary, setSummary] = useState<SpinAnalyticsSummary | null>(null)
   const [recent, setRecent] = useState<number[]>([])
   const [spinTotal, setSpinTotal] = useState(0)
+  const [observerSpinTotal, setObserverSpinTotal] = useState(0)
   const [chips, setChips] = useState<string[]>([])
   const [progStep, setProgStep] = useState<number | null>(null)
   const [strategyName, setStrategyName] = useState<string | null>(null)
@@ -33,6 +34,7 @@ export default function CasinoDashboard(props: {
       setSummary(o.summary)
       setRecent(o.recentSpinsDesc)
       setSpinTotal(o.spinTotal)
+      setObserverSpinTotal(o.observerSpinTotal ?? 0)
     } catch {
       /* ignore */
     }
@@ -112,7 +114,13 @@ export default function CasinoDashboard(props: {
               </div>
             </div>
             <div className="text-right text-xs text-slate-500">
-              {t('casinoSpinsInDb')}: <span className="font-mono text-slate-300">{spinTotal}</span>
+              <div>
+                {t('casinoSpinsInDb')}: <span className="font-mono text-slate-300">{spinTotal}</span>
+              </div>
+              <div className="mt-1">
+                {t('casinoObserverLearnedSpins')}:{' '}
+                <span className="font-mono text-sky-400">{observerSpinTotal}</span>
+              </div>
             </div>
           </div>
 

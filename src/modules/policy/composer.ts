@@ -63,6 +63,19 @@ function applyPolicyShell(
       }
       return DecisionSchema.parse({ ...d, metadata: { ...d.metadata, policyMode: 'dry-run' } })
     }
+    case 'observer': {
+      if (d.action === 'PLACE_BET') {
+        return DecisionSchema.parse({
+          ...d,
+          action: 'PREPARE_BET',
+          reason: `${d.reason} [observer — no bets]`,
+          requiresConfirmation: false,
+          riskFlags: [...d.riskFlags, 'observer_mode'],
+          metadata: { ...d.metadata, policyMode: 'observer' }
+        })
+      }
+      return DecisionSchema.parse({ ...d, metadata: { ...d.metadata, policyMode: 'observer' } })
+    }
     case 'suggestion':
       return DecisionSchema.parse({
         ...d,
