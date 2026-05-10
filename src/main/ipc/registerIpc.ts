@@ -24,7 +24,6 @@ import type { Logger } from '../logger'
 import type { BrowserHost } from '../playwright/BrowserHost'
 import type { TeachingRecorder } from '../teaching/TeachingRecorder'
 import { createAssistWindow } from '../assist-window'
-import { GenericDomObserver } from '../playwright/GenericDomObserver'
 import { createTableExecutor } from '../playwright/create-table-executor'
 import { GalaxsysRouletteXObserver } from '../playwright/GalaxsysRouletteXObserver'
 import { LiveSessionController } from '../session/LiveSessionController'
@@ -38,12 +37,6 @@ const EURO_WHEEL_SEQ = [
 let mockWheelCursor = 0
 
 const DEFAULT_SETTINGS: AppSettings = SettingsSchema.parse({})
-
-/** Fresh Casino slug may be `galaxsys` or `galaxys` — both must map to the real Playwright adapter (not mock). */
-function isGalaxsysRouletteXUrl(url?: string): boolean {
-  if (!url) return false
-  return /https?:\/\/(?:www\.)?fresh\.casino\/table\/galax(s)?ys-roulettex(?:\/|[?#]|$)/i.test(url.trim())
-}
 
 async function readSettings(db: DbClient['db']): Promise<AppSettings> {
   const rows = await db.select().from(schema.settings).where(eq(schema.settings.key, 'app'))
@@ -311,11 +304,10 @@ export function registerIpc(deps: {
       await browserHost.launch(parsed.startUrl)
     }
     const page = browserHost.getPage()
+    /** Multi-frame DOM heuristic (iframes + shadow roots + locator fallback) — not only Galaxsys slug. */
     const observer =
-      page && parsed.startUrl
-        ? isGalaxsysRouletteXUrl(parsed.startUrl)
-          ? new GalaxsysRouletteXObserver(page)
-          : new GenericDomObserver(page, {})
+      page && parsed.startUrl?.trim().startsWith('http')
+        ? new GalaxsysRouletteXObserver(page)
         : new MockTableObserver(() => {
             const n = EURO_WHEEL_SEQ[mockWheelCursor % EURO_WHEEL_SEQ.length]!
             mockWheelCursor += 1

@@ -170,6 +170,8 @@ type Snap = {
   deepStripNumbers: number[]
   /** History modal column «10 Черный» — document order top = newest round */
   gameColumnNumbers: number[]
+  /** Lone 0–36 in a small element whose ancestors suggest «last result» UI */
+  singleResultHits: number[]
 }
 
 function emptySnap(): Snap {
@@ -185,7 +187,8 @@ function emptySnap(): Snap {
     roundId: null,
     extraNumberRuns: [],
     deepStripNumbers: [],
-    gameColumnNumbers: []
+    gameColumnNumbers: [],
+    singleResultHits: []
   }
 }
 
@@ -344,6 +347,35 @@ function snapshotFromDocumentUnsafe(): Snap {
     scanText.match(/(?:Ticket|Билет|Game\s*ID)\s*(?:ID|id)?\s*[:\s#]*(\d+)/iu)
   if (rid?.[1]) roundId = rid[1]
 
+  const singleResultHits: number[] = []
+  const clsPlusAncestors = (el: Element): string => {
+    let s = clsId(el)
+    let p: Element | null = el.parentElement
+    for (let d = 0; d < 4 && p; d += 1, p = p.parentElement) {
+      const hc = (p as HTMLElement).className
+      const cl = typeof hc === 'string' ? hc : ''
+      s += ` ${cl} ${p.id ?? ''}`
+    }
+    return s
+  }
+  for (const el of all) {
+    const raw = text(el)
+    const onlyNum = raw.match(/^\s*(\d{1,2})\s*$/)
+    if (!onlyNum) continue
+    const n = Number.parseInt(onlyNum[1]!, 10)
+    if (!Number.isInteger(n) || n < 0 || n > 36) continue
+    if (raw.length > 4) continue
+    const ctx = clsPlusAncestors(el).toLowerCase()
+    /** Avoid matching every «cell» on the felt: require result/history/racetrack-adjacent hints, not generic `number`. */
+    if (
+      /result|winner|last[-_]?win|last[-_]?spin|ball|outcome|current|previous|последн|выпал|roulette|stat(ist)?|history|colour|color|hot|cold|recent|wheel|sector|выпад|раунд|round(?!-id)/i.test(
+        ctx
+      )
+    ) {
+      singleResultHits.push(n)
+    }
+  }
+
   return {
     historyText,
     bodyText,
@@ -356,7 +388,8 @@ function snapshotFromDocumentUnsafe(): Snap {
     roundId,
     extraNumberRuns,
     deepStripNumbers,
-    gameColumnNumbers
+    gameColumnNumbers,
+    singleResultHits
   }
 }
 
@@ -382,6 +415,8 @@ function buildObservationFromSnap(snap: Snap): TableObservation {
     recent = mergeDedupeNewestFirst([anchor, ...fromHistory], 16)
   } else if (fromHistory.length) {
     recent = mergeDedupeNewestFirst(fromHistory, 16)
+  } else if (snap.singleResultHits.length >= 1) {
+    recent = mergeDedupeNewestFirst(snap.singleResultHits, 16)
   }
 
   const lower = snap.scanText.toLowerCase()
@@ -398,6 +433,8 @@ function buildObservationFromSnap(snap: Snap): TableObservation {
   if (strip.length) rawParts.push(`strip:${strip.join(',')}`)
   if (snap.gameColumnNumbers.length)
     rawParts.push(`gameCol:${snap.gameColumnNumbers.slice(0, 20).join(',')}`)
+  if (snap.singleResultHits.length)
+    rawParts.push(`single:${snap.singleResultHits.slice(0, 12).join(',')}`)
   if (snap.deepStripNumbers.length && strip.join(',') !== snap.deepStripNumbers.join(','))
     rawParts.push(`deepStrip:${snap.deepStripNumbers.join(',')}`)
   if (fromExtras.length) rawParts.push(`runs:${mergeDedupeNewestFirst(fromExtras, 16).join(',')}`)
@@ -452,7 +489,7 @@ export class GalaxsysRouletteXObserver implements TableObserver {
           const t = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
           if (t.length < 12 || t.length > 600) return
           const nums = tok(t)
-          if (nums.length < 6) return
+          if (nums.length < 4) return
           const uniq = new Set(nums)
           if (uniq.size < 5 || uniq.size > 24) return
           if (nums.length > best.length) best = nums
