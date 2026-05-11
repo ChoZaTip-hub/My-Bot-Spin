@@ -11,7 +11,12 @@ export const SettingsSchema = z.object({
   perSessionExecutionConsent: z.boolean().default(false),
   disclaimerAccepted: z.boolean().default(false),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  executorEnabled: z.boolean().default(false)
+  executorEnabled: z.boolean().default(false),
+  /**
+   * When true, live table opens inside the app (BrowserView + CDP). When false (default),
+   * opens in a separate Google Chrome window when available — fewer bot checks / reload loops.
+   */
+  useEmbeddedCasinoTable: z.boolean().default(false)
 })
 
 export type AppSettings = z.infer<typeof SettingsSchema>

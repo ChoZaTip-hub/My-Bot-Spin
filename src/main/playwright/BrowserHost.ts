@@ -14,10 +14,16 @@ export type BrowserHostOptions = {
   /** Right-pane embedded casino (BrowserView). */
   tableEmbed: TableEmbedManager | null
   /**
-   * When true (default), session uses embedded BrowserView + CDP.
-   * Set env `RSA_EMBEDDED_TABLE=0` to use the legacy separate Chromium window.
+   * When true, session may use embedded BrowserView + CDP.
+   * Set env `RSA_EMBEDDED_TABLE=0` to force the separate browser window.
+   * Per-launch override in {@link BrowserHost.launch}.
    */
   useEmbeddedTable: boolean
+}
+
+export type BrowserLaunchOptions = {
+  /** When set, overrides {@link BrowserHostOptions.useEmbeddedTable} for this launch only. */
+  useEmbeddedTable?: boolean
 }
 
 function hostFromUrl(startUrl: string): string {
@@ -44,10 +50,13 @@ export class BrowserHost {
     return this.page
   }
 
-  async launch(startUrl?: string): Promise<void> {
+  async launch(startUrl?: string, launchOpts?: BrowserLaunchOptions): Promise<void> {
     const win = this.opts.getMainWindow()
+    const embedOn =
+      (launchOpts?.useEmbeddedTable ?? this.opts.useEmbeddedTable) !== false &&
+      process.env.RSA_EMBEDDED_TABLE !== '0'
     const embed =
-      this.opts.useEmbeddedTable !== false &&
+      embedOn &&
       Boolean(startUrl?.startsWith('http')) &&
       Boolean(this.opts.tableEmbed) &&
       Boolean(win)
@@ -132,14 +141,22 @@ export class BrowserHost {
     mkdirSync(profileDir, { recursive: true })
 
     if (!this.context) {
-      this.logger.log('info', 'Launching Playwright Chromium (external window, persistent profile)', {
-        profileDir
-      })
-      this.context = await chromium.launchPersistentContext(profileDir, {
+      const common = {
         headless: false,
         viewport: { width: 1280, height: 800 },
-        locale: 'ru-RU'
-      })
+        locale: 'ru-RU' as const
+      }
+      try {
+        this.context = await chromium.launchPersistentContext(profileDir, {
+          ...common,
+          channel: 'chrome'
+        })
+        this.logger.log('info', 'Table window: using Google Chrome (system install)')
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        this.logger.log('warn', 'Google Chrome channel unavailable, using bundled Chromium', { error: msg })
+        this.context = await chromium.launchPersistentContext(profileDir, common)
+      }
       const existing = this.context.pages()
       this.page = existing[0] ?? (await this.context.newPage())
     }

@@ -1,9 +1,5 @@
 import { BrowserView, type BrowserWindow, session } from 'electron'
 import type { Logger } from './logger'
-import {
-  attachEmbedDomAutomationMildPatch,
-  ensureCasinoEmbedSessionHardening
-} from './casino-browser-hardening'
 
 /** Navigation column width — match renderer `w-52` (13rem = 208px at 16px root) + small slack. */
 export const NAV_COLUMN_PX = 208
@@ -30,6 +26,24 @@ export const UPPER_EMBED_HEIGHT_RATIO = 14 / (14 + 11)
 /** App chrome header (title row) — keep slightly above measured height so the strip is not clipped. */
 const HEADER_OFFSET_Y = 58
 const PAD = 6
+
+/**
+ * Avoid forcing a full reload when the shell already settled on the same page (redirects, trailing slash, locale prefix).
+ */
+function sameTableDocument(cur: string, requested: string): boolean {
+  if (cur === requested) return true
+  if (cur === 'about:blank' || !cur.startsWith('http')) return false
+  try {
+    const a = new URL(cur)
+    const b = new URL(requested)
+    if (a.origin !== b.origin) return false
+    const pa = (a.pathname.replace(/\/$/, '') || '/') + a.search
+    const pb = (b.pathname.replace(/\/$/, '') || '/') + b.search
+    return pa === pb
+  } catch {
+    return false
+  }
+}
 
 /**
  * Embeds the casino table in the top portion of the main window (above forms / timeline).
@@ -69,7 +83,6 @@ export class TableEmbedManager {
    */
   async openTable(win: BrowserWindow, startUrl: string): Promise<void> {
     this.attach(win)
-    ensureCasinoEmbedSessionHardening()
 
     if (!this.view) {
       this.view = new BrowserView({
@@ -86,7 +99,6 @@ export class TableEmbedManager {
     }
 
     const wc = this.view.webContents
-    attachEmbedDomAutomationMildPatch(wc)
 
     win.setBrowserView(this.view)
     this.layout(win)
@@ -113,7 +125,7 @@ export class TableEmbedManager {
     }
 
     const cur = wc.getURL()
-    if (cur !== u) {
+    if (!sameTableDocument(cur, u)) {
       try {
         await wc.loadURL(u)
       } catch (e) {
@@ -121,8 +133,9 @@ export class TableEmbedManager {
         this.logger.log('error', 'Embedded table loadURL rejected', { url: u.slice(0, 200), detail })
         throw new Error(
           `Table did not load (${detail}). ` +
-            `If the console shows DNS / ERR_NAME_NOT_RESOLVED (-105), fix network or DNS, open the same URL in a normal browser, ` +
-            `or launch with RSA_EMBEDDED_TABLE=0 to use a separate Chromium window instead of the embedded view.`
+            `If the console shows DNS / ERR_NAME_NOT_RESOLVED (-105), fix network or DNS. ` +
+            `Otherwise turn off «Embed casino table» in Settings (separate Chrome window), ` +
+            `or set env RSA_EMBEDDED_TABLE=0.`
         )
       }
     }

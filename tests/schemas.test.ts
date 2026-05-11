@@ -8,6 +8,7 @@ describe('zod schemas', () => {
     expect(s.locale).toBe('en')
     expect(s.dryRunOnly).toBe(true)
     expect(s.executorEnabled).toBe(false)
+    expect(s.useEmbeddedCasinoTable).toBe(false)
   })
 
   it('parses simulation request', () => {

@@ -1390,6 +1390,18 @@ function SettingsPage(props: {
             onChange={(e) => void props.onChange({ dryRunOnly: e.target.checked })}
           />
         </label>
+        <div className="rounded-md border border-border/80 bg-surface/50 p-3">
+          <label className="flex items-start justify-between gap-4 text-sm">
+            <span className="pr-2">{t('setEmbedTable')}</span>
+            <input
+              type="checkbox"
+              className="mt-1 shrink-0"
+              checked={props.settings.useEmbeddedCasinoTable}
+              onChange={(e) => void props.onChange({ useEmbeddedCasinoTable: e.target.checked })}
+            />
+          </label>
+          <p className="mt-2 text-xs leading-relaxed text-slate-500">{t('setEmbedTableHint')}</p>
+        </div>
         <label className="flex items-center justify-between gap-4 text-sm">
           <span>{t('setExecutor')}</span>
           <input

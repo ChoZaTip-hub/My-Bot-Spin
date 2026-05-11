@@ -47,7 +47,7 @@ const en = {
   simpleObserveOnly: 'Observer mode — record spins only, no bets (strategy optional)',
   simpleProfitHint: 'Profit/loss are tracked from the first balance reading on the table.',
   embedTableHint:
-    'Casino table opens in the upper pane when you start a live session with a table URL (embedded browser — controls and timeline stay below).',
+    'By default the casino opens in a separate Google Chrome window (see Settings). If you enable «Embed table in app», the table appears in the upper strip after you start a live session; controls and timeline stay below.',
   simpleManualLastSpin: 'Last winning number (fallback)',
   simpleManualLastSpinPh: '0–36, optional — used once if spins are not detected',
   manualSpinInvalid: 'Enter an integer from 0 to 36, or leave empty.',
@@ -125,6 +125,9 @@ const en = {
   colMessage: 'Message',
   settingsTitle: 'Settings',
   setDryRun: 'Dry-run only (hard block execution)',
+  setEmbedTable: 'Embed casino table in the app (upper strip)',
+  setEmbedTableHint:
+    'Off (recommended): separate Google Chrome window — fewer bot checks. On: inside this window (Electron); some sites reload or loop CAPTCHA.',
   setExecutor: 'Executor enabled (still policy gated)',
   setConsent: 'Per-session execution consent (skip per-bet modal)',
   setTheme: 'Theme',
@@ -259,7 +262,7 @@ const ru: Record<keyof typeof en, string> = {
   simpleProfitHint:
     'Прибыль/убыток считаются от первого считанного баланса на столе после старта.',
   embedTableHint:
-    'Стол казино открывается в верхней части окна после «Старт» с URL стола; формы и журнал — ниже, как удобнее для логов.',
+    'По умолчанию стол открывается в отдельном Google Chrome (см. Настройки). Если включить «Встроить стол в приложение», после старта сессии стол будет в верхней полосе; формы и журнал — ниже.',
   simpleManualLastSpin: 'Последний выпавший номер (если не читается стол)',
   simpleManualLastSpinPh: '0–36, необязательно — один раз, если спины не распознаны',
   manualSpinInvalid: 'Введите целое число от 0 до 36 или оставьте пустым.',
@@ -338,6 +341,9 @@ const ru: Record<keyof typeof en, string> = {
   colMessage: 'Сообщение',
   settingsTitle: 'Настройки',
   setDryRun: 'Только dry-run (жёсткая блокировка выполнения)',
+  setEmbedTable: 'Встроить стол казино в приложение (верхняя полоса)',
+  setEmbedTableHint:
+    'Выключено (рекомендуется): отдельное окно Google Chrome — меньше антибота. Включено: внутри этого окна (Electron); часть сайтов перезагружается или крутит капчу.',
   setExecutor: 'Исполнитель включён (всё равно через политику)',
   setConsent: 'Согласие на сессию (без модалки на каждую ставку)',
   setTheme: 'Тема',

@@ -56,6 +56,12 @@ async function writeSettings(db: DbClient['db'], s: AppSettings): Promise<void> 
     })
 }
 
+async function resolveUseEmbeddedCasinoView(db: DbClient['db']): Promise<boolean> {
+  if (process.env.RSA_EMBEDDED_TABLE === '0') return false
+  const s = await readSettings(db)
+  return s.useEmbeddedCasinoTable === true
+}
+
 export function registerIpc(deps: {
   db: DbClient['db']
   logger: Logger
@@ -245,7 +251,8 @@ export function registerIpc(deps: {
   })
 
   ipcMain.handle(IPC_CHANNELS.browserLaunch, async (_e, url?: string) => {
-    await browserHost.launch(url)
+    const useEmbedded = await resolveUseEmbeddedCasinoView(db)
+    await browserHost.launch(url, { useEmbeddedTable: useEmbedded })
     return { ok: true as const }
   })
   ipcMain.handle(IPC_CHANNELS.browserClose, async () => {
@@ -301,7 +308,8 @@ export function registerIpc(deps: {
     if (!strategy) throw new Error('strategyConfig or strategyId required')
 
     if (parsed.startUrl) {
-      await browserHost.launch(parsed.startUrl)
+      const useEmbedded = await resolveUseEmbeddedCasinoView(db)
+      await browserHost.launch(parsed.startUrl, { useEmbeddedTable: useEmbedded })
     }
     const page = browserHost.getPage()
     /** Multi-frame DOM heuristic (iframes + shadow roots + locator fallback) — not only Galaxsys slug. */
