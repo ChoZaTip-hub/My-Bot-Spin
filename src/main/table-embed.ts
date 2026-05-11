@@ -1,8 +1,21 @@
-import { BrowserView, type BrowserWindow } from 'electron'
+import { BrowserView, type BrowserWindow, session } from 'electron'
 import type { Logger } from './logger'
 
-/** Navigation column width (Tailwind `w-52` + padding) — must match renderer. */
-export const NAV_COLUMN_PX = 220
+/** Navigation column width — match renderer `w-52` (13rem = 208px at 16px root) + small slack. */
+export const NAV_COLUMN_PX = 208
+
+/**
+ * Strip Electron from the default UA so casino sites that block or degrade Electron
+ * still receive a normal Chrome-like string (Safari works; embedded Chromium often did not).
+ */
+function chromeLikeUserAgent(): string {
+  const raw = session.defaultSession.getUserAgent()
+  return raw
+    .replace(/\s*Electron\/[\d.]+\s*/gi, ' ')
+    .replace(/\s*RSA\/[^\s]+\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 /**
  * Share of the content area *below the header* used for the embedded table (top strip).
@@ -10,7 +23,8 @@ export const NAV_COLUMN_PX = 220
  */
 export const UPPER_EMBED_HEIGHT_RATIO = 14 / (14 + 11)
 
-const HEADER_OFFSET_Y = 52
+/** App chrome header (title row) — keep slightly above measured height so the strip is not clipped. */
+const HEADER_OFFSET_Y = 58
 const PAD = 6
 
 /**
@@ -56,7 +70,8 @@ export class TableEmbedManager {
       this.view = new BrowserView({
         webPreferences: {
           partition: 'persist:galaxsys-table',
-          sandbox: true,
+          /** Many real-money games rely on WASM / third-party scripts that break under OS-level sandbox. */
+          sandbox: false,
           contextIsolation: true,
           nodeIntegration: false,
           webSecurity: true
@@ -69,6 +84,11 @@ export class TableEmbedManager {
     this.layout(win)
 
     const wc = this.view.webContents
+    try {
+      wc.setUserAgent(chromeLikeUserAgent())
+    } catch {
+      /* ignore */
+    }
     const u = startUrl.trim()
     if (!u.startsWith('http')) {
       throw new Error('Invalid table URL')
@@ -99,6 +119,9 @@ export class TableEmbedManager {
         )
       }
     }
+    this.layout(win)
+    await new Promise((r) => setTimeout(r, 200))
+    this.layout(win)
     this.logger.log('info', 'Embedded table navigated', { url: u.slice(0, 120) })
   }
 
@@ -114,6 +137,7 @@ export class TableEmbedManager {
     const h = embedH
     this.view.setBounds({ x: left, y: top, width: w, height: h })
     this.view.setAutoResize({ width: false, height: false })
+    this.logger.log('debug', 'Embedded table bounds', { x: left, y: top, w, h })
   }
 
   /** Remove view from window (keeps WebContents alive for same session next open). */
