@@ -3,6 +3,9 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { RSA_CDP_PORT } from './cdp-config'
 import { createLogger, forwardLogsToRenderer } from './logger'
 
+/** Reduces obvious automation signals in Chromium (helps some bot checks; not a guarantee). */
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
+
 /** Lets Playwright attach to the same Electron process (embedded BrowserView). */
 app.commandLine.appendSwitch('remote-debugging-port', RSA_CDP_PORT)
 

@@ -1,5 +1,9 @@
 import { BrowserView, type BrowserWindow, session } from 'electron'
 import type { Logger } from './logger'
+import {
+  attachEmbedDomAutomationMildPatch,
+  ensureCasinoEmbedSessionHardening
+} from './casino-browser-hardening'
 
 /** Navigation column width — match renderer `w-52` (13rem = 208px at 16px root) + small slack. */
 export const NAV_COLUMN_PX = 208
@@ -65,6 +69,7 @@ export class TableEmbedManager {
    */
   async openTable(win: BrowserWindow, startUrl: string): Promise<void> {
     this.attach(win)
+    ensureCasinoEmbedSessionHardening()
 
     if (!this.view) {
       this.view = new BrowserView({
@@ -80,10 +85,12 @@ export class TableEmbedManager {
       this.logger.log('info', 'Created BrowserView for embedded table')
     }
 
+    const wc = this.view.webContents
+    attachEmbedDomAutomationMildPatch(wc)
+
     win.setBrowserView(this.view)
     this.layout(win)
 
-    const wc = this.view.webContents
     try {
       wc.setUserAgent(chromeLikeUserAgent())
     } catch {
