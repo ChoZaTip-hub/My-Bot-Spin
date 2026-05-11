@@ -10,13 +10,16 @@ import type { Logger } from '../logger'
 const PROFILE_DIR_NAME = 'playwright-chromium-profile'
 
 /**
- * Playwright injects `--enable-automation` by default → Chrome shows
- * "controlled by automated test software" and Cloudflare often never finishes.
+ * - Playwright adds `--enable-automation` by default → strip via ignoreDefaultArgs.
+ * - Playwright defaults `chromiumSandbox: false` → adds `--no-sandbox` → Chrome warns and
+ *   Cloudflare often blocks; enable sandbox so that flag is not passed (macOS/typical desktop).
+ *   Linux-in-Docker only: if the browser fails to start, set env RSA_PLAYWRIGHT_NO_SANDBOX=1 to restore Playwright default.
  */
 const PLAYWRIGHT_TABLE_CONTEXT_OPTS = {
   headless: false,
   viewport: { width: 1280, height: 800 },
   locale: 'ru-RU' as const,
+  chromiumSandbox: process.env.RSA_PLAYWRIGHT_NO_SANDBOX !== '1',
   ignoreDefaultArgs: ['--enable-automation'],
   args: ['--disable-blink-features=AutomationControlled']
 }
