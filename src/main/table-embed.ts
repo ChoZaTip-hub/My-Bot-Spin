@@ -73,9 +73,31 @@ export class TableEmbedManager {
     if (!u.startsWith('http')) {
       throw new Error('Invalid table URL')
     }
+
+    if (!wc.listenerCount('did-fail-load')) {
+      wc.on('did-fail-load', (_ev, code, desc, url, isMainFrame) => {
+        if (!isMainFrame) return
+        this.logger.log('warn', 'Embedded table navigation failed', {
+          code,
+          desc,
+          url: url.slice(0, 200)
+        })
+      })
+    }
+
     const cur = wc.getURL()
     if (cur !== u) {
-      await wc.loadURL(u)
+      try {
+        await wc.loadURL(u)
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e)
+        this.logger.log('error', 'Embedded table loadURL rejected', { url: u.slice(0, 200), detail })
+        throw new Error(
+          `Table did not load (${detail}). ` +
+            `If the console shows DNS / ERR_NAME_NOT_RESOLVED (-105), fix network or DNS, open the same URL in a normal browser, ` +
+            `or launch with RSA_EMBEDDED_TABLE=0 to use a separate Chromium window instead of the embedded view.`
+        )
+      }
     }
     this.logger.log('info', 'Embedded table navigated', { url: u.slice(0, 120) })
   }
