@@ -9,6 +9,18 @@ import type { Logger } from '../logger'
 /** Subfolder under Electron userData — cookies when using external Chromium fallback. */
 const PROFILE_DIR_NAME = 'playwright-chromium-profile'
 
+/**
+ * Playwright injects `--enable-automation` by default → Chrome shows
+ * "controlled by automated test software" and Cloudflare often never finishes.
+ */
+const PLAYWRIGHT_TABLE_CONTEXT_OPTS = {
+  headless: false,
+  viewport: { width: 1280, height: 800 },
+  locale: 'ru-RU' as const,
+  ignoreDefaultArgs: ['--enable-automation'],
+  args: ['--disable-blink-features=AutomationControlled']
+}
+
 export type BrowserHostOptions = {
   getMainWindow: () => BrowserWindow | null
   /** Right-pane embedded casino (BrowserView). */
@@ -141,21 +153,18 @@ export class BrowserHost {
     mkdirSync(profileDir, { recursive: true })
 
     if (!this.context) {
-      const common = {
-        headless: false,
-        viewport: { width: 1280, height: 800 },
-        locale: 'ru-RU' as const
-      }
       try {
         this.context = await chromium.launchPersistentContext(profileDir, {
-          ...common,
+          ...PLAYWRIGHT_TABLE_CONTEXT_OPTS,
           channel: 'chrome'
         })
         this.logger.log('info', 'Table window: using Google Chrome (system install)')
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         this.logger.log('warn', 'Google Chrome channel unavailable, using bundled Chromium', { error: msg })
-        this.context = await chromium.launchPersistentContext(profileDir, common)
+        this.context = await chromium.launchPersistentContext(profileDir, {
+          ...PLAYWRIGHT_TABLE_CONTEXT_OPTS
+        })
       }
       const existing = this.context.pages()
       this.page = existing[0] ?? (await this.context.newPage())
