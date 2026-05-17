@@ -16,7 +16,16 @@ export const SettingsSchema = z.object({
    * When true, live table opens inside the app (BrowserView + CDP). When false (default),
    * opens in a separate Google Chrome window when available — fewer bot checks / reload loops.
    */
-  useEmbeddedCasinoTable: z.boolean().default(false)
+  useEmbeddedCasinoTable: z.boolean().default(false),
+  /**
+   * How to open the casino table when not embedded.
+   * `cdp-chrome` — Chrome with --remote-debugging-port + Playwright CDP (default).
+   * `webkit` — Playwright WebKit (Safari engine); on macOS also opens Safari.app for viewing.
+   * `embedded` — same as useEmbeddedCasinoTable.
+   */
+  tableBrowser: z
+    .enum(['cdp-chrome', 'webkit', 'embedded', 'safari-cdp'])
+    .default('cdp-chrome')
 })
 
 export type AppSettings = z.infer<typeof SettingsSchema>

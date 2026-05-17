@@ -25,6 +25,10 @@ type LocatorRoot = Page | Frame
 
 const CLICK_TIMEOUT_MS = 8000
 
+function isPage(r: LocatorRoot): r is Page {
+  return typeof (r as Page).goto === 'function'
+}
+
 /**
  * Generic Playwright executor for web roulette: chip strip, number grid, confirm — with optional
  * per-table hints from recorded sessions ({@link RouletteTeachingMapping}).
@@ -149,7 +153,7 @@ export class HeuristicRouletteExecutor implements TableExecutor {
   }
 
   /** Try DOM probe in one frame, then all frames (game often nested). */
-  private async clickChipDom(amount: number): Promise<boolean> {
+  private async clickChipDom(amount: number, preferredFrame: Frame | null = null): Promise<boolean> {
     const tryFrame = async (fr: Frame): Promise<boolean> => {
       try {
         return await fr.evaluate((denom: number) => {
@@ -217,8 +221,12 @@ export class HeuristicRouletteExecutor implements TableExecutor {
       }
     }
 
+    if (preferredFrame) {
+      if (await tryFrame(preferredFrame)) return true
+    }
     if (await tryFrame(this.page.mainFrame())) return true
     for (const fr of this.page.frames()) {
+      if (preferredFrame && fr === preferredFrame) continue
       if (await tryFrame(fr)) return true
     }
     return false
@@ -228,7 +236,9 @@ export class HeuristicRouletteExecutor implements TableExecutor {
     const hint = this.findChipHint(amount)
     if (hint && (await this.clickHint(hint))) return
 
-    if (await this.clickChipDom(amount)) return
+    const preferredFrame = isPage(root) ? null : root
+
+    if (await this.clickChipDom(amount, preferredFrame)) return
 
     const raw = String(amount)
     const strictRx = new RegExp(`^\\s*${escapeRegex(raw)}(?:[.,]0+)?\\s*$`)
@@ -282,7 +292,11 @@ export class HeuristicRouletteExecutor implements TableExecutor {
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
   }
 
-  private async clickStraightNumber(target: number, root: LocatorRoot): Promise<void> {
+  private async clickStraightNumber(
+    target: number,
+    root: LocatorRoot,
+    opts: { allowLoose: boolean } = { allowLoose: true }
+  ): Promise<void> {
     const hint = this.findStraightHint(target)
     if (hint && (await this.clickHint(hint))) return
 
@@ -314,7 +328,13 @@ export class HeuristicRouletteExecutor implements TableExecutor {
     const boardCandidates = root
       .locator('div, section, article')
       .filter({ hasText: BOARD_HINT_RX })
-    const board = (await boardCandidates.count()) > 0 ? boardCandidates.first() : root.locator('body')
+    const narrow = root.locator('[class*="roulette" i], [class*="Roulette" i], main, canvas').first()
+    const board =
+      (await boardCandidates.count()) > 0
+        ? boardCandidates.first()
+        : (await narrow.count()) > 0
+          ? narrow
+          : root.locator('body')
 
     const attempts: Array<() => Promise<void>> = [
       async () => {
@@ -329,13 +349,15 @@ export class HeuristicRouletteExecutor implements TableExecutor {
       },
       async () => {
         await board.getByRole('button', { name: numberRx }).first().click({ timeout: CLICK_TIMEOUT_MS, force: true })
-      },
-      async () => {
+      }
+    ]
+    if (opts.allowLoose) {
+      attempts.push(async () => {
         const cell = board.locator('button, [role="button"], div, span').filter({ hasText: looseNum }).first()
         await cell.scrollIntoViewIfNeeded().catch(() => undefined)
         await cell.click({ timeout: CLICK_TIMEOUT_MS, force: true })
-      }
-    ]
+      })
+    }
 
     let lastErr: unknown
     for (const run of attempts) {
@@ -387,14 +409,46 @@ export class HeuristicRouletteExecutor implements TableExecutor {
     try {
       if (!instructions.length) return { ok: true }
       const root = await this.getBestGameFrame()
-      const firstAmount = instructions[0]!.amount
-      await this.clickChip(firstAmount, root)
-      for (const instr of instructions) {
-        if (instr.betType !== 'straight' || typeof instr.target !== 'number') {
-          return { ok: false, error: `Unsupported instruction for heuristic roulette executor: ${instr.betType}` }
-        }
-        await this.clickStraightNumber(instr.target, root)
+
+      await this.clearBet().catch(() => undefined)
+
+      const straights: Array<BetInstruction & { target: number }> = []
+      for (const i of instructions) {
+        if (i.betType !== 'straight') continue
+        const t = typeof i.target === 'number' ? i.target : Number(i.target)
+        if (!Number.isInteger(t) || t < 0 || t > 36) continue
+        straights.push({ ...i, target: t })
       }
+      if (!straights.length) {
+        return { ok: false, error: 'Heuristic executor: no valid straight (0–36) instructions' }
+      }
+
+      const deduped: Array<BetInstruction & { target: number }> = []
+      const seen = new Set<number>()
+      for (const i of straights) {
+        if (seen.has(i.target)) continue
+        seen.add(i.target)
+        deduped.push(i)
+      }
+
+      /** Heuristic table UI: never more than five distinct straight pockets per round. */
+      const active = deduped.slice(0, 5)
+      const amounts = new Set(active.map((x) => x.amount))
+      const isVipFive = active.length === 5 && amounts.size === 1
+
+      /** One placement per number; chip value comes from stake (`0.1`, `1`, …), not a hardcoded unit. */
+      if (amounts.size === 1) {
+        await this.clickChip(active[0]!.amount, root)
+        for (const instr of active) {
+          await this.clickStraightNumber(instr.target, root, { allowLoose: !isVipFive })
+        }
+      } else {
+        for (const instr of active) {
+          await this.clickChip(instr.amount, root)
+          await this.clickStraightNumber(instr.target, root, { allowLoose: true })
+        }
+      }
+
       const c = await this.confirmBetOn(root)
       return c.ok ? { ok: true } : c
     } catch (err) {

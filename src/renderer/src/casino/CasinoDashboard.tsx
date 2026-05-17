@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { Line, LineChart, ResponsiveContainer, Tooltip, YAxis } from 'recharts'
 import type { SpinAnalyticsSummary } from '@modules/shared/sector-analytics'
 import { DecisionSchema } from '@modules/shared/decision'
 import { isRed } from '@modules/shared/roulette'
@@ -26,8 +25,6 @@ export default function CasinoDashboard(props: {
   const [chips, setChips] = useState<string[]>([])
   const [progStep, setProgStep] = useState<number | null>(null)
   const [strategyName, setStrategyName] = useState<string | null>(null)
-  const [spark, setSpark] = useState<{ i: number; v: number }[]>([])
-
   const load = async (): Promise<void> => {
     try {
       const o = await api.analytics.overview()
@@ -72,22 +69,6 @@ export default function CasinoDashboard(props: {
     const id = setInterval(() => void load(), 4000)
     return () => clearInterval(id)
   }, [api])
-
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem('rsa_last_curve')
-      if (!raw) {
-        setSpark([])
-        return
-      }
-      const arr = JSON.parse(raw) as number[]
-      if (!Array.isArray(arr)) return
-      const tail = arr.slice(-120)
-      setSpark(tail.map((v, i) => ({ i, v })))
-    } catch {
-      setSpark([])
-    }
-  }, [])
 
   const dom = summary?.dominantSector
 
@@ -192,26 +173,6 @@ export default function CasinoDashboard(props: {
                 </div>
               </div>
             </div>
-          </div>
-
-          <div className="rounded-xl border border-border/80 bg-elevated/90 p-5 shadow-card">
-            <div className="text-xs uppercase tracking-wider text-slate-500">{t('casinoShadow')}</div>
-            {spark.length > 0 ? (
-              <div className="mt-3 h-40">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={spark}>
-                    <YAxis hide domain={['auto', 'auto']} />
-                    <Tooltip
-                      contentStyle={{ background: '#111827', border: '1px solid #374151' }}
-                      formatter={(v: number) => [v.toFixed(0), '']}
-                    />
-                    <Line type="monotone" dataKey="v" stroke="var(--profit)" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <p className="mt-3 text-sm text-slate-500">{t('casinoNoSimYet')}</p>
-            )}
           </div>
 
           <div className="rounded-xl border border-border/80 bg-elevated/90 p-4 shadow-card">

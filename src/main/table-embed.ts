@@ -1,5 +1,6 @@
 import { BrowserView, type BrowserWindow, session } from 'electron'
 import type { Logger } from './logger'
+import { TABLE_MAIN_WORLD_MITIGATION } from './automation-mitigation'
 
 /** Navigation column width — match renderer `w-52` (13rem = 208px at 16px root) + small slack. */
 export const NAV_COLUMN_PX = 208
@@ -52,6 +53,7 @@ function sameTableDocument(cur: string, requested: string): boolean {
 export class TableEmbedManager {
   private view: BrowserView | null = null
   private attachedWin: BrowserWindow | null = null
+  private mitigationHookInstalled = false
   private readonly onResize = (): void => {
     if (this.attachedWin && this.view) this.layout(this.attachedWin)
   }
@@ -100,6 +102,13 @@ export class TableEmbedManager {
 
     const wc = this.view.webContents
 
+    if (!this.mitigationHookInstalled) {
+      this.mitigationHookInstalled = true
+      wc.on('did-finish-load', () => {
+        void this.injectMainWorldMitigation()
+      })
+    }
+
     win.setBrowserView(this.view)
     this.layout(win)
 
@@ -142,7 +151,32 @@ export class TableEmbedManager {
     this.layout(win)
     await new Promise((r) => setTimeout(r, 200))
     this.layout(win)
+    await this.injectMainWorldMitigation()
     this.logger.log('info', 'Embedded table navigated', { url: u.slice(0, 120) })
+  }
+
+  /**
+   * Wait until navigation settles, then pause so human-verification widgets can complete
+   * before Playwright attaches over CDP (debugger attach often resets those checks).
+   */
+  async settleBeforePlaywrightAttach(extraQuietMs: number): Promise<void> {
+    const wc = this.view?.webContents
+    if (!wc) return
+    const navDeadline = Date.now() + 45_000
+    while (wc.isLoading() && Date.now() < navDeadline) {
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    await new Promise((r) => setTimeout(r, Math.max(0, extraQuietMs)))
+  }
+
+  private async injectMainWorldMitigation(): Promise<void> {
+    const wc = this.view?.webContents
+    if (!wc) return
+    try {
+      await wc.executeJavaScript(TABLE_MAIN_WORLD_MITIGATION)
+    } catch {
+      /* cross-origin or page not ready */
+    }
   }
 
   layout(win: BrowserWindow): void {
@@ -177,6 +211,7 @@ export class TableEmbedManager {
   destroy(win: BrowserWindow): void {
     this.hide(win)
     this.view = null
+    this.mitigationHookInstalled = false
     this.detachWindowListeners()
   }
 

@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts'
 import type { AppSettings } from '@modules/shared/ipc-contract'
 import type { AppMode } from '@modules/shared/modes'
-import { StrategyConfigSchema } from '@modules/shared/strategy-config'
 import type { AppLocale } from './i18n/types'
 import type { MessageKey } from './i18n/messages'
 import { translate } from './i18n/messages'
@@ -68,7 +57,6 @@ type Page =
   | 'simple'
   | 'strategies'
   | 'feedTables'
-  | 'simulator'
   | 'live'
   | 'teach'
   | 'logs'
@@ -89,24 +77,6 @@ function useThemeClass(settings: AppSettings | null) {
       (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
     root.classList.toggle('dark', dark)
   }, [settings])
-}
-
-function drawdownSeries(curve: number[]): { step: number; drawdown: number }[] {
-  let peak = curve[0] ?? 0
-  return curve.map((b, i) => {
-    peak = Math.max(peak, b)
-    return { step: i, drawdown: peak - b }
-  })
-}
-
-const METRIC_LABELS: Partial<Record<string, MessageKey>> = {
-  totalSessions: 'metric_totalSessions',
-  winRate: 'metric_winRate',
-  evEstimate: 'metric_evEstimate',
-  maxDrawdownAcrossSessions: 'metric_maxDrawdownAcrossSessions',
-  longestLossStreak: 'metric_longestLossStreak',
-  longestWinStreak: 'metric_longestWinStreak',
-  mode: 'metric_mode'
 }
 
 function MainApp(): React.ReactElement {
@@ -216,7 +186,6 @@ function AppChrome(props: {
     ['simple', 'navSimple'],
     ['strategies', 'navStrategies'],
     ['feedTables', 'navFeedTables'],
-    ['simulator', 'navSimulator'],
     ['live', 'navLive'],
     ['teach', 'navTeach'],
     ['logs', 'navLogs'],
@@ -362,9 +331,6 @@ function AppChrome(props: {
               />
             )}
             {page === 'feedTables' && <FeedTablesPage api={api} />}
-            {page === 'simulator' && (
-              <SimulatorPage api={api} strategies={strategies} metricLabels={METRIC_LABELS} />
-            )}
             {page === 'live' && (
               <LivePage api={api} strategies={strategies} settings={settings} setSettings={setSettings} />
             )}
@@ -514,7 +480,7 @@ function SimpleLaunchPage(props: {
             value={strategyId}
             onChange={(e) => void setStrategyId(e.target.value)}
           >
-            <option value="">{t('simSelect')}</option>
+            <option value="">{t('pickOption')}</option>
             {props.strategies.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -829,197 +795,6 @@ function StrategiesPage(props: {
   )
 }
 
-function SimulatorPage(props: {
-  api: ReturnType<typeof getApi>
-  strategies: { id: string; name: string }[]
-  metricLabels: Partial<Record<string, MessageKey>>
-}): React.ReactElement {
-  const { t } = useI18n()
-  const [strategyId, setStrategyId] = useState<string>('')
-  const [seed, setSeed] = useState('42')
-  const [spins, setSpins] = useState('500')
-  const [bankroll, setBankroll] = useState('1000')
-  const [batch, setBatch] = useState('20')
-  const [curve, setCurve] = useState<number[]>([])
-  const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null)
-  const [histSpins, setHistSpins] = useState<number[]>([])
-
-  useEffect(() => {
-    if (props.strategies.length === 1 && strategyId === '') {
-      setStrategyId(props.strategies[0]!.id)
-    }
-  }, [props.strategies, strategyId])
-
-  const chartData = useMemo(() => {
-    const dd = drawdownSeries(curve)
-    return curve.map((b, i) => ({
-      step: i,
-      bankroll: b,
-      drawdown: dd[i]?.drawdown ?? 0
-    }))
-  }, [curve])
-
-  const metricTitle = (key: string): string => {
-    const mk = props.metricLabels[key]
-    return mk ? t(mk) : key
-  }
-
-  return (
-    <div>
-      <h1 className="text-xl font-semibold">{t('simTitle')}</h1>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <div className="rounded border border-border bg-elevated p-4">
-          <label className="text-xs font-medium text-slate-500">{t('simStrategy')}</label>
-          <select
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
-            value={strategyId}
-            onChange={(e) => void setStrategyId(e.target.value)}
-          >
-            <option value="">{t('simSelect')}</option>
-            {props.strategies.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simSeed')}</label>
-          <input
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
-            value={seed}
-            onChange={(e) => setSeed(e.target.value)}
-          />
-          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simSpins')}</label>
-          <input
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
-            value={spins}
-            onChange={(e) => setSpins(e.target.value)}
-          />
-          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simBankroll')}</label>
-          <input
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
-            value={bankroll}
-            onChange={(e) => setBankroll(e.target.value)}
-          />
-          <label className="mt-3 block text-xs font-medium text-slate-500">{t('simBatch')}</label>
-          <input
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-2 text-sm"
-            value={batch}
-            onChange={(e) => setBatch(e.target.value)}
-          />
-          <button
-            type="button"
-            className="mt-4 w-full rounded bg-accent py-2 text-sm font-medium text-white"
-            onClick={async () => {
-              const cfgUnknown = await props.api.strategies.get(strategyId)
-              const cfg = StrategyConfigSchema.parse(cfgUnknown)
-              const res = (await props.api.simulation.run({
-                strategyConfig: cfg,
-                seed: Number.parseInt(seed, 10),
-                spinCount: Number.parseInt(spins, 10),
-                initialBankroll: Number.parseFloat(bankroll),
-                batchSessions: Number.parseInt(batch, 10)
-              })) as { lastCurve: number[]; metrics: Record<string, unknown> }
-              setCurve(res.lastCurve)
-              setMetrics(res.metrics)
-              try {
-                sessionStorage.setItem('rsa_last_curve', JSON.stringify(res.lastCurve))
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            {t('simRunMc')}
-          </button>
-        </div>
-        <div className="rounded border border-border bg-elevated p-4">
-          <h2 className="text-sm font-semibold">{t('simHistTitle')}</h2>
-          <button
-            type="button"
-            className="mt-2 rounded border border-border px-3 py-2 text-sm"
-            onClick={async () => {
-              const path = await props.api.dialog.pickCsv()
-              if (!path) return
-              const { spins: s } = await props.api.import.spinsCsv(path)
-              setHistSpins(s)
-            }}
-          >
-            {t('simPickCsv')}
-          </button>
-          <p className="mt-2 text-xs text-slate-500">
-            {histSpins.length} {t('simSpinsLoaded')}
-          </p>
-          <button
-            type="button"
-            className="mt-4 w-full rounded bg-slate-800 py-2 text-sm font-medium text-white dark:bg-slate-200 dark:text-slate-900"
-            onClick={async () => {
-              const cfgUnknown = await props.api.strategies.get(strategyId)
-              const cfg = StrategyConfigSchema.parse(cfgUnknown)
-              const res = (await props.api.simulation.runHistorical({
-                strategyConfig: cfg,
-                initialBankroll: Number.parseFloat(bankroll),
-                spins: histSpins
-              })) as { bankrollCurve: number[] }
-              setCurve(res.bankrollCurve)
-              setMetrics({ mode: 'historical' })
-              try {
-                sessionStorage.setItem('rsa_last_curve', JSON.stringify(res.bankrollCurve))
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            {t('simReplay')}
-          </button>
-        </div>
-      </div>
-
-      {metrics && (
-        <div className="mt-6 grid gap-3 md:grid-cols-3">
-          {Object.entries(metrics)
-            .filter(([k]) => k !== 'endingBankrollDistribution')
-            .map(([k, v]) => (
-              <div key={k} className="rounded border border-border bg-elevated p-3 text-sm">
-                <div className="text-xs uppercase text-slate-500">{metricTitle(k)}</div>
-                <div className="mt-1 font-mono text-lg">{typeof v === 'number' ? v.toFixed(4) : String(v)}</div>
-              </div>
-            ))}
-        </div>
-      )}
-
-      {chartData.length > 0 && (
-        <div className="mt-8 h-72 rounded border border-border bg-elevated p-2">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} />
-              <XAxis dataKey="step" />
-              <YAxis yAxisId="left" />
-              <YAxis yAxisId="right" orientation="right" />
-              <Tooltip />
-              <Legend />
-              <Line
-                yAxisId="left"
-                type="monotone"
-                dataKey="bankroll"
-                name={t('chartBankroll')}
-                stroke="var(--profit)"
-                dot={false}
-              />
-              <Line
-                yAxisId="right"
-                type="monotone"
-                dataKey="drawdown"
-                name={t('chartDrawdown')}
-                stroke="var(--danger)"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </div>
-  )
-}
-
 function LivePage(props: {
   api: ReturnType<typeof getApi>
   strategies: { id: string; name: string }[]
@@ -1141,7 +916,6 @@ function LivePage(props: {
         >
           {props.settings.executorEnabled && !props.settings.dryRunOnly ? t('autoBetOn') : t('autoBetOff')}
         </span>
-        <span className="text-xs text-slate-500">({t('setExecutor')})</span>
       </div>
       <div className="flex flex-wrap gap-3">
         <select
@@ -1402,6 +1176,25 @@ function SettingsPage(props: {
           </label>
           <p className="mt-2 text-xs leading-relaxed text-slate-500">{t('setEmbedTableHint')}</p>
         </div>
+        {!props.settings.useEmbeddedCasinoTable && (
+          <label className="block text-sm">
+            <div className="mb-1 text-xs uppercase text-slate-500">{t('setTableBrowser')}</div>
+            <select
+              className="w-full rounded border border-border bg-elevated px-2 py-2"
+              value={props.settings.tableBrowser}
+              onChange={(e) =>
+                void props.onChange({
+                  tableBrowser: e.target.value as AppSettings['tableBrowser']
+                })
+              }
+            >
+              <option value="cdp-chrome">{t('setTableBrowserCdp')}</option>
+              <option value="safari-cdp">{t('setTableBrowserSafariCdp')}</option>
+              <option value="webkit">{t('setTableBrowserWebkit')}</option>
+            </select>
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">{t('setTableBrowserHint')}</p>
+          </label>
+        )}
         <label className="flex items-center justify-between gap-4 text-sm">
           <span>{t('setExecutor')}</span>
           <input
@@ -1410,6 +1203,7 @@ function SettingsPage(props: {
             onChange={(e) => void props.onChange({ executorEnabled: e.target.checked })}
           />
         </label>
+        <p className="-mt-2 text-xs leading-relaxed text-slate-500">{t('setExecutorHint')}</p>
         <label className="flex items-center justify-between gap-4 text-sm">
           <span>{t('setConsent')}</span>
           <input
@@ -1418,6 +1212,7 @@ function SettingsPage(props: {
             onChange={(e) => void props.onChange({ perSessionExecutionConsent: e.target.checked })}
           />
         </label>
+        <p className="-mt-2 text-xs leading-relaxed text-slate-500">{t('setConsentHint')}</p>
         <label className="block text-sm">
           <div className="mb-1 text-xs uppercase text-slate-500">{t('setLocale')}</div>
           <select

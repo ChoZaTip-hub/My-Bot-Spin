@@ -9,6 +9,7 @@ describe('zod schemas', () => {
     expect(s.dryRunOnly).toBe(true)
     expect(s.executorEnabled).toBe(false)
     expect(s.useEmbeddedCasinoTable).toBe(false)
+    expect(s.tableBrowser).toBe('cdp-chrome')
   })
 
   it('parses simulation request', () => {

@@ -28,6 +28,7 @@ import { createTableExecutor } from '../playwright/create-table-executor'
 import { GalaxsysRouletteXObserver } from '../playwright/GalaxsysRouletteXObserver'
 import { LiveSessionController } from '../session/LiveSessionController'
 import type { RiskLimits } from '@modules/risk-manager/types'
+import { resolveTableBrowserMode } from '../table-browser-mode'
 
 /** Synthetic wheel order for mock observer (no live page). */
 const EURO_WHEEL_SEQ = [
@@ -54,12 +55,6 @@ async function writeSettings(db: DbClient['db'], s: AppSettings): Promise<void> 
       target: schema.settings.key,
       set: { valueJson: JSON.stringify(s), updatedAt: now }
     })
-}
-
-async function resolveUseEmbeddedCasinoView(db: DbClient['db']): Promise<boolean> {
-  if (process.env.RSA_EMBEDDED_TABLE === '0') return false
-  const s = await readSettings(db)
-  return s.useEmbeddedCasinoTable === true
 }
 
 export function registerIpc(deps: {
@@ -251,8 +246,9 @@ export function registerIpc(deps: {
   })
 
   ipcMain.handle(IPC_CHANNELS.browserLaunch, async (_e, url?: string) => {
-    const useEmbedded = await resolveUseEmbeddedCasinoView(db)
-    await browserHost.launch(url, { useEmbeddedTable: useEmbedded })
+    const settings = await readSettings(db)
+    const mode = resolveTableBrowserMode(settings)
+    await browserHost.launch(url, { tableBrowser: mode, useEmbeddedTable: mode === 'embedded' })
     return { ok: true as const }
   })
   ipcMain.handle(IPC_CHANNELS.browserClose, async () => {
@@ -308,8 +304,11 @@ export function registerIpc(deps: {
     if (!strategy) throw new Error('strategyConfig or strategyId required')
 
     if (parsed.startUrl) {
-      const useEmbedded = await resolveUseEmbeddedCasinoView(db)
-      await browserHost.launch(parsed.startUrl, { useEmbeddedTable: useEmbedded })
+      const mode = resolveTableBrowserMode(settings)
+      await browserHost.launch(parsed.startUrl, {
+        tableBrowser: mode,
+        useEmbeddedTable: mode === 'embedded'
+      })
     }
     const page = browserHost.getPage()
     /** Multi-frame DOM heuristic (iframes + shadow roots + locator fallback) — not only Galaxsys slug. */
